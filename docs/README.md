@@ -12,6 +12,8 @@
 | [Dominio de Voz](dominio-voz.md) | Canal de voz (voice-core, C++): unirse, señalización WebRTC P2P, revocación, plan por fases y verificación. |
 | [Dominio de Transmisión en vivo](dominio-transmision.md) | Transmisión del host (stream-core, C++ SFU): HU y AC, WHIP/WHEP, simulcast, salas `live`, `ROOM_CLOSED`, performance y spikes. *Especificación.* |
 | [Contrato de eventos de analítica](contrato-eventos-analitica.md) | Qué publica cada servicio en `analytics:events` y qué entrega Analítica a cambio (tablas y API de lectura de KPIs). |
+| [Pruebas de seguridad y rendimiento](pruebas-seguridad.md) | Banco de medición del Prototipo 3: método, cómo correrlo y línea base antes de las medidas de seguridad. |
+| ↳ [Evidencia de la línea base](evidencia-linea-base.md) | Qué prueba se aplicó, con qué herramienta y qué resultado dio cada una en `develop`. |
 | [Bug hunting 2026-10](bug-hunting-2026-10.md) | Hallazgos de la ronda de bug hunting de octubre de 2026 y cómo se corrigieron. |
 
 ## README de cada servicio
