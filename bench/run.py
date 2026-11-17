@@ -6,6 +6,7 @@ Corre en el portátil (generador de carga) y maneja el servidor por SSH. Solo us
   python3 bench/run.py prepare                     # para el stack público y deja listo el clon aislado
   python3 bench/run.py measure --label antes-develop
   python3 bench/run.py security --label antes-develop
+  python3 bench/run.py lab6 --label lab6           # Laboratorio 6: curva por VUs y knee de 4 endpoints
   python3 bench/run.py restore                     # baja el banco y devuelve el servidor a como estaba
   python3 bench/summarize.py bench/results/antes-develop [bench/results/despues]
 
@@ -18,7 +19,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -36,6 +39,7 @@ PUBLIC_REPO = r"C:\tint\tint-monorepo"
 PUBLIC_OVERRIDE = r"C:\tint\compose.server.yml"
 TASK = "TINT Deploy"
 SSH_NOISE = ("post-quantum", "store now, decrypt later", "may need to be upgraded", "openssh.com/pq")
+K6_IMAGE = "grafana/k6:2.4.0"
 CALIBRATION_RATES = [25, 50, 100, 200, 400, 800, 1200]
 
 
@@ -45,6 +49,7 @@ class Ctx:
         self.ip = args.ip
         self.port = args.https_port
         self.image_tag = getattr(args, "image_tag", "")
+        self.local = getattr(args, "local", False)
 
     @property
     def base(self) -> str:
@@ -53,7 +58,9 @@ class Ctx:
 
 
 def ssh(ctx: Ctx, command: str, check: bool = True, timeout: int = 900) -> str:
-    result = subprocess.run(["ssh", "-o", "BatchMode=yes", ctx.host, command], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    # --local: el "servidor" es esta misma máquina (Docker local, sin SSH).
+    argv = ["sh", "-c", command] if ctx.local else ["ssh", "-o", "BatchMode=yes", ctx.host, command]
+    result = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=ROOT)
     noise = lambda text: "\n".join(line for line in text.splitlines() if not any(n in line for n in SSH_NOISE))  # noqa: E731
     if check and result.returncode != 0:
         raise RuntimeError(f"ssh falló ({result.returncode}): {command[:80]}\n{noise(result.stderr)[:500]}")
@@ -64,7 +71,17 @@ def scp(ctx: Ctx, local: Path, remote_dir: str) -> None:
     subprocess.run(["scp", "-o", "BatchMode=yes", "-q", str(local), f"{ctx.host}:{remote_dir}"], check=True, capture_output=True)
 
 
+LOCAL_PROJECT = "tintlab6"
+# Lo mínimo para la feature medida (web, gateway, identity-api, PostgreSQL, Redis y MinIO): cabe en un portátil.
+LOCAL_SERVICES = "gateway web identity-api postgres redis minio minio-init firebase-auth-emulator"
+
+
 def compose(ctx: Ctx, args: str, **kwargs) -> str:
+    if ctx.local:
+        # Proyecto propio con volúmenes propios: `down -v` no toca los datos del stack de desarrollo.
+        env = f"GATEWAY_HTTPS_PORT={ctx.port} GATEWAY_HTTP_PORT=8088 BENCH_IMAGE_TAG={ctx.image_tag or 'latest'}"
+        services = LOCAL_SERVICES if args.startswith("up") else ""
+        return ssh(ctx, f"{env} docker compose -p {LOCAL_PROJECT} -f docker-compose.yml -f bench/compose.bench.yml {args} {services}", **kwargs)
     prefix = f"set BENCH_IMAGE_TAG={ctx.image_tag}&& " if ctx.image_tag else ""
     return ssh(ctx, f"{prefix}cd /d {REMOTE_REPO} && docker compose {args}", **kwargs)
 
@@ -139,11 +156,18 @@ def cmd_restore(ctx: Ctx, _args: argparse.Namespace) -> None:
 
 
 def k6(ctx: Ctx, script: str, out: Path, env: dict[str, str]) -> int:
-    cmd = ["k6", "run", "--insecure-skip-tls-verify", "--summary-trend-stats=min,med,p(90),p(95),p(99),max",
-           "--summary-export", str(out)]
+    run = ["run", "--insecure-skip-tls-verify", "--summary-trend-stats=avg,min,med,p(90),p(95),p(99),max"]
+    if shutil.which("k6"):
+        cmd, out_arg, script_arg = ["k6", *run], str(out), str(ROOT / script)
+    else:
+        # Sin k6 instalado: la imagen oficial con red del host y el repo montado (las rutas deben quedar bajo ROOT).
+        cmd = ["docker", "run", "--rm", "--network", "host", "-u", f"{os.getuid()}:{os.getgid()}",
+               "-v", f"{ROOT}:/work", "-w", "/work", K6_IMAGE, *run]
+        out_arg, script_arg = f"/work/{out.resolve().relative_to(ROOT)}", script
+    cmd += ["--summary-export", out_arg]
     for key, value in env.items():
         cmd += ["-e", f"{key}={value}"]
-    result = subprocess.run([*cmd, str(ROOT / script)], capture_output=True, text=True, cwd=ROOT)
+    result = subprocess.run([*cmd, script_arg], capture_output=True, text=True, cwd=ROOT)
     out.with_suffix(".log").write_text(result.stdout + result.stderr)
     return result.returncode
 
@@ -157,7 +181,9 @@ class Sampler:
     def __enter__(self):
         self.file = self.path.open("w")
         fmt = '"{{.Name}},{{.CPUPerc}},{{.MemUsage}}"'
-        self.proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", self.ctx.host, f"docker stats --format {fmt}"],
+        remote = f"docker stats --format {fmt}"
+        argv = ["sh", "-c", remote] if self.ctx.local else ["ssh", "-o", "BatchMode=yes", self.ctx.host, remote]
+        self.proc = subprocess.Popen(argv,
                                      stdout=self.file, stderr=subprocess.DEVNULL)
         time.sleep(3)
         return self
@@ -262,6 +288,68 @@ def cmd_measure(ctx: Ctx, args: argparse.Namespace) -> None:
     print("\n" + summarize.markdown(summarize.load_label(label_dir)))
 
 
+class LocalCpu:
+    """CPU del portátil (generador) desde /proc/stat mientras dura el bloque `with`: descarta escalones limitados por k6."""
+
+    def __init__(self, path: Path, every: float = 2.0):
+        self.path, self.every, self.samples = path, every, []
+
+    @staticmethod
+    def _read() -> tuple[int, int]:
+        fields = [int(v) for v in Path("/proc/stat").read_text().splitlines()[0].split()[1:]]
+        return fields[3] + fields[4], sum(fields)  # idle + iowait, total
+
+    def _loop(self) -> None:
+        idle, total = self._read()
+        while not self.stop.wait(self.every):
+            idle2, total2 = self._read()
+            busy = 100.0 * (1 - (idle2 - idle) / max(1, total2 - total))
+            self.samples.append((round(time.time(), 1), round(busy, 1)))
+            idle, total = idle2, total2
+
+    def __enter__(self):
+        import threading
+
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop.set()
+        self.thread.join(timeout=5)
+        self.path.write_text("epoch,cpu_pct\n" + "".join(f"{t},{c}\n" for t, c in self.samples))
+
+
+LAB6_TARGETS = ["gateway", "playback", "sync-ticket", "claim"]
+
+
+def cmd_lab6(ctx: Ctx, args: argparse.Namespace) -> None:
+    """Laboratorio 6: para cada endpoint, una corrida por VUs (stages) con el stack recreado, docker stats y CPU local."""
+    label_dir = RESULTS / args.label
+    label_dir.mkdir(parents=True, exist_ok=True)
+    if args.smoke:
+        args.runs, args.levels, args.hold = 1, "1,5", 10
+    targets = args.targets.split(",")
+    for n in range(1, args.runs + 1):
+        run_dir = label_dir / f"run-{n}"
+        run_dir.mkdir(exist_ok=True)
+        for target in targets:
+            print(f"== corrida {n}/{args.runs}: {target}")
+            if not args.no_reset:
+                reset(ctx)
+            env = {"BASE_URL": ctx.base, "SERVER_IP": ctx.ip, "TARGET": target, "LEVELS": args.levels,
+                   "HOLD": str(args.hold), "HOSTS": str(args.hosts), "ROOMS": str(args.rooms_for_list if target == "rooms" else args.rooms)}
+            with LocalCpu(run_dir / f"cpu-portatil-{target}.csv"):
+                if args.no_stats:
+                    code = k6(ctx, "bench/k6/lab6.js", run_dir / f"lab6-{target}.json", env)
+                else:
+                    with Sampler(ctx, run_dir / f"stats-lab6-{target}.csv"):
+                        code = k6(ctx, "bench/k6/lab6.js", run_dir / f"lab6-{target}.json", env)
+            print(f"   k6 exit {code}")
+    print("\n" + summarize.lab6_report(label_dir, hold_s=args.hold))
+
+
 def cmd_security(ctx: Ctx, args: argparse.Namespace) -> None:
     out = RESULTS / args.label / "security.json"
     subprocess.run([sys.executable, str(BENCH / "security_checks.py"), "--ip", ctx.ip, "--https-port", str(ctx.port),
@@ -274,6 +362,8 @@ def main() -> int:
     parser.add_argument("--ip", default="192.168.1.7")
     parser.add_argument("--https-port", type=int, default=8443)
     parser.add_argument("--image-tag", default="", help="BENCH_IMAGE_TAG para el 'después' (por defecto: latest)")
+    parser.add_argument("--local", action="store_true",
+                        help="stack y carga en esta máquina (proyecto tintlab6, Docker local, sin SSH); usar --ip 127.0.0.1")
     sub = parser.add_subparsers(dest="command", required=True)
 
     prepare = sub.add_parser("prepare")
@@ -294,12 +384,25 @@ def main() -> int:
     measure.add_argument("--sync-duration", default="60s")
     measure.add_argument("--smoke", action="store_true", help="corrida corta de verificación del banco")
 
+    lab6 = sub.add_parser("lab6", help="Laboratorio 6: curva de rendimiento y knee por VUs")
+    lab6.add_argument("--label", required=True)
+    lab6.add_argument("--targets", default=",".join(LAB6_TARGETS), help="gateway,playback,sync-ticket,claim,rooms,ssr")
+    lab6.add_argument("--runs", type=int, default=3)
+    lab6.add_argument("--levels", default="1,50,200,500,1000,2000")
+    lab6.add_argument("--hold", type=int, default=30, help="segundos de meseta por nivel")
+    lab6.add_argument("--hosts", type=int, default=1, help="1 = todos los VUs comparten la fila del host")
+    lab6.add_argument("--rooms", type=int, default=3)
+    lab6.add_argument("--rooms-for-list", type=int, default=300, help="salas sembradas para TARGET=rooms")
+    lab6.add_argument("--no-reset", action="store_true", help="no recrea el stack (p. ej. stack local sin SSH)")
+    lab6.add_argument("--no-stats", action="store_true", help="sin docker stats por SSH")
+    lab6.add_argument("--smoke", action="store_true", help="niveles 1 y 5 con mesetas de 10 s")
+
     security = sub.add_parser("security")
     security.add_argument("--label", required=True)
 
     args = parser.parse_args()
     ctx = Ctx(args)
-    {"prepare": cmd_prepare, "restore": cmd_restore, "measure": cmd_measure, "security": cmd_security}[args.command](ctx, args)
+    {"prepare": cmd_prepare, "restore": cmd_restore, "measure": cmd_measure, "security": cmd_security, "lab6": cmd_lab6}[args.command](ctx, args)
     return 0
 
 
