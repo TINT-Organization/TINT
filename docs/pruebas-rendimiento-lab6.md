@@ -74,7 +74,7 @@ La gráfica necesita `matplotlib` en el portátil; sin ella, el resumen sale igu
 
 ## 4. Resultados
 
-_Pendiente de la corrida en el servidor. Pegar aquí la salida de `summarize.py --lab6` (tabla por nivel, knee y recursos de cada prueba) y la curva._
+Corrida del 2026-11-16 en una sola máquina: [resultados-rendimiento-lab6.md](resultados-rendimiento-lab6.md). Knee de sync-ticket en 50 VUs y de playback, claim y el gateway con identity-api detrás en 200 VUs; Caddy solo no se degrada hasta 2000 VUs. El cuello es identity-api, un solo proceso Node que satura su núcleo.
 
 ## 5. Limitaciones
 
