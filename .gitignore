@@ -32,3 +32,6 @@ __pycache__/
 
 # Respaldos de los almacenes (DAT-06): contienen datos personales
 backups/
+
+# Resultados crudos del banco de medición (bench/): se versiona solo la tabla resumida en docs/
+bench/results/

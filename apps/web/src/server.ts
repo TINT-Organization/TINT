@@ -6,6 +6,11 @@ import { fileURLToPath } from 'node:url';
 import type { Duplex } from 'node:stream';
 import { renderHtmlPage, isSsrRoute, type RenderOptions } from './entry-server';
 import type { RoomDetails } from './lib/serverInvite';
+import {
+  extractAuthFromRequest,
+  type DashboardData,
+  type FetchDashboardOptions,
+} from './lib/serverDashboard';
 
 export interface StaticFileMock {
   content: string | Buffer;
@@ -26,6 +31,7 @@ export interface RequestHandlerOptions {
   distDir?: string;
   staticFiles?: Record<string, StaticFileMock>;
   fetchRoomDetails?: (code: string) => Promise<RoomDetails | null>;
+  fetchDashboardData?: (token?: string, options?: FetchDashboardOptions) => Promise<DashboardData>;
   apiBaseUrl?: string;
   proxyTargets?: ProxyTargets;
 }
@@ -441,7 +447,10 @@ export function createRequestHandler(options: RequestHandlerOptions = {}) {
       try {
         const renderOpts: RenderOptions = {
           fetchRoomDetails: options.fetchRoomDetails,
-          apiBaseUrl: options.apiBaseUrl,
+          fetchDashboardData: options.fetchDashboardData,
+          authToken: extractAuthFromRequest(req).token,
+          userRole: extractAuthFromRequest(req).role,
+          apiBaseUrl: options.apiBaseUrl ?? (process.env.IDENTITY_API_URL || `${proxyTargets.api}/api/v1`),
         };
         const { html, statusCode } = await renderHtmlPage(templateHtml, rawUrl, renderOpts);
         res.statusCode = statusCode;
@@ -449,7 +458,8 @@ export function createRequestHandler(options: RequestHandlerOptions = {}) {
         res.setHeader('Cache-Control', 'no-cache');
         res.end(method === 'HEAD' ? undefined : html);
         return;
-      } catch {
+      } catch (err) {
+        console.error('[tint-web] Fallo inesperado en renderizado SSR para %s:', rawUrl, err);
         // Ante cualquier fallo inesperado de SSR, fallback al index.html del cliente
         res.statusCode = 200;
         res.setHeader('Content-Type', 'text/html; charset=utf-8');

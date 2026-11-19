@@ -1,0 +1,50 @@
+# Override del banco de medición (bench/): corre un segundo stack, aislado del público, sin choques
+# de nombres (COMPOSE_PROJECT_NAME=tintbench). Los puertos se conservan (el stack público debe estar
+# detenido) para medir la topología tal como está en develop. Los servicios con build reutilizan
+# las imágenes ya construidas (BENCH_IMAGE_TAG, por defecto latest) y se arranca con --no-build.
+services:
+  env-check:
+    container_name: !reset null
+  gateway:
+    container_name: !reset null
+  web:
+    container_name: !reset null
+    image: tint-monorepo-web:${BENCH_IMAGE_TAG:-latest}
+  postgres:
+    container_name: !reset null
+  redis:
+    container_name: !reset null
+  minio:
+    container_name: !reset null
+  minio-init:
+    container_name: !reset null
+  media-worker:
+    container_name: !reset null
+    image: tint-monorepo-media-worker:${BENCH_IMAGE_TAG:-latest}
+  analytics:
+    container_name: !reset null
+    image: tint-monorepo-analytics:${BENCH_IMAGE_TAG:-latest}
+  social-core:
+    container_name: !reset null
+    image: tint-monorepo-social-core:${BENCH_IMAGE_TAG:-latest}
+  sync-core:
+    container_name: !reset null
+    image: tint-monorepo-sync-core:${BENCH_IMAGE_TAG:-latest}
+  identity-api:
+    container_name: !reset null
+    image: tint-monorepo-identity-api:${BENCH_IMAGE_TAG:-latest}
+  voice-core:
+    container_name: !reset null
+    image: tint-monorepo-voice-core:${BENCH_IMAGE_TAG:-latest}
+  mongodb:
+    container_name: !reset null
+  mongo-init:
+    container_name: !reset null
+  stream-core:
+    container_name: !reset null
+    image: tint-monorepo-stream-core:${BENCH_IMAGE_TAG:-latest}
+  firebase-auth-emulator:
+    container_name: !reset null
+    image: tint-monorepo-firebase-auth-emulator:${BENCH_IMAGE_TAG:-latest}
+  coturn:
+    container_name: !reset null

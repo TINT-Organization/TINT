@@ -108,13 +108,15 @@ Muestra los componentes **en tiempo de ejecución** y los conectores por los que
 
 ```mermaid
 flowchart LR
-    subgraph nav["Navegador"]
+    subgraph presentation["Presentación"]
         WEB["web SPA<br/>useSyncSocket · useSocialSocket<br/>apiFetch · useAmbilight"]
     end
 
-    FB["Firebase Auth<br/>externo"]
+    subgraph gateway["Gateway"]
+        GW["Caddy gateway<br/>HTTP/HTTPS :80/:443"]
+    end
 
-    subgraph srv["Servicios"]
+    subgraph logic["Lógica de aplicación"]
         ID["identity-api"]
         SYNC["sync-core<br/>réplicas 1..N"]
         SOCIAL["social-core<br/>réplicas 1..N"]
@@ -123,12 +125,16 @@ flowchart LR
         VC["voice-core<br/>1 réplica"]
     end
 
-    TURN["coturn<br/>STUN/TURN"]
+    subgraph external["Dependencias externas"]
+        FB["Firebase Auth<br/>externo"]
+        TURN["coturn<br/>STUN/TURN"]
+    end
 
-    subgraph store["Almacenes"]
+    subgraph data["Datos"]
         PG[("PostgreSQL")]
         RD[("Redis")]
         MI[("MinIO<br/>bucket tint-media")]
+        MDB[("MongoDB<br/>social.chat_message_meta")]
     end
 
     WEB -- "C1 · Firebase JS SDK · ID token RS256" --> FB
@@ -145,6 +151,7 @@ flowchart LR
     AN -- "C9 · SQL" --> PG
     ID -- "C10 · S3 API · HEAD y DELETE" --> MI
     MW -- "C10 · S3 API · GET y PUT" --> MI
+    SOCIAL -- "C20 · MongoDB · metadatos de chat" --> MDB
     ID -. "C11 · clave token:revoked:jti + PUBLISH REVOKED" .-> RD
     SYNC <-. "C12 · Pub/Sub room:id:sync · claves sync_state y presencia" .-> RD
     SOCIAL <-. "C13 · Pub/Sub room:id:social · lee room:id:sync · claves room:id:chat, poll, recap, trivia" .-> RD
@@ -173,7 +180,20 @@ flowchart LR
 | `( )` cilindro | Almacén de datos |
 | `Cn` | Identificador del conector en la tabla de abajo |
 
-### 4.1 Tabla de conectores
+### 4.1 Estilos y patrones arquitectónicos
+
+| Estilo o patrón | Aplicación en TINT | Justificación |
+| :--- | :--- | :--- |
+| Arquitectura orientada a servicios por dominio | `identity-api`, `sync-core`, `social-core`, `media-worker`, `analytics` y `voice-core` separan identidad, reproducción, interacción social, procesamiento multimedia, analítica y voz | Cada dominio conserva sus reglas y almacenes; los contratos compartidos se documentan explícitamente y coordinan cambios entre dominios ([§5](#5-contratos-compartidos-entre-dominios)). |
+| Entrada única mediante gateway | Caddy recibe el tráfico público HTTP/HTTPS, ejecuta `forward_auth` y enruta REST y WebSocket hacia los servicios | Centraliza autenticación, CORS, orígenes y terminación de entrada sin exponer los servicios internos directamente ([ADR 0020](adr/0020-entrada-unica-https-y-topologia-produccion.md)). |
+| Comunicación síncrona solicitud/respuesta | REST/HTTP entre la web, el gateway y las APIs; SQL y S3 para operaciones que requieren respuesta inmediata | Es adecuada para login, tickets, playback, moderación y URLs firmadas, donde el consumidor necesita el resultado antes de continuar. |
+| Mensajería asíncrona y fan-out | Redis Pub/Sub distribuye estado en tiempo real; Redis Streams desacopla `media:uploads` y `analytics:events` con grupos y acuses | Pub/Sub reduce la latencia de réplicas y Streams aporta persistencia temporal, reintentos y `XACK` para trabajos que no deben bloquear los caminos interactivos ([ADR 0003](adr/0003-redis-pubsub-para-fanout-entre-replicas.md), [ADR 0009](adr/0009-procesamiento-asincrono-con-redis-streams.md)). |
+| Separación de almacenes por responsabilidad | PostgreSQL conserva datos relacionales, Redis estado efímero y coordinación, MinIO objetos multimedia y MongoDB metadatos de chat | Cada almacén se usa según sus propiedades y el ownership queda delimitado por servicio; los contenidos y responsabilidades están enumerados en [§6](#6-almacenes-de-datos). |
+| WebSocket persistente para tiempo real | Canales Sync, Social y Voz mantienen conexiones bidireccionales, mientras WebRTC transporta el audio entre navegadores | Evita sondeos para eventos interactivos y permite cierres terminales con códigos de dominio (`4001`, `4003`, `4008`, `4010`) cuando el estado debe llegar al cliente ([ADR 0014](adr/0014-upgrade-y-cierre-4xxx-para-estados-terminales.md)). |
+
+Estos estilos se combinan: el gateway y REST resuelven la entrada y las operaciones síncronas; los WebSocket y Redis cubren coordinación en tiempo real; y los Streams aíslan procesamiento que puede ser eventual. La vista distingue el **tipo de conector** de la **capa del componente**, para que un enlace HTTP no se confunda con un bus asíncrono o un almacén.
+
+### 4.2 Tabla de conectores
 
 | Id | Tipo | Origen → destino | Protocolo | Sincronía | Contrato o fuente de verdad |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -187,7 +207,7 @@ flowchart LR
 | C7 | Verificación de token | identity-api → Google | HTTPS JWKS `securetoken@system.gserviceaccount.com` (`jwks-rsa`, en caché) | Síncrono (con caché) | [usuarios-e-identidad §4](usuarios-e-identidad.md#4-esquemas-de-tokens) |
 | C8 | Verificación de token | social-core → Google | HTTPS certificados x509 públicos por `kid` (caché por `Cache-Control`) | Síncrono (con caché) | [social-core/AGENTS.md § Autenticación](../services/social-core/AGENTS.md#autenticación-de-wssocial) |
 | C9 | SQL | identity-api, media-worker, analytics → PostgreSQL | Drizzle ORM (identity-api), `psycopg` 3 (Python) | Síncrono | [usuarios-e-identidad §3](usuarios-e-identidad.md#3-esquema-de-datos-postgresql) · [analytics/AGENTS.md](../services/analytics/AGENTS.md#modelo-de-datos-involucrado) |
-| C10 | S3 API | identity-api, media-worker → MinIO | `@aws-sdk/client-s3` (HEAD, DELETE) · `boto3` (GET, PUT) | Síncrono | [media-worker/AGENTS.md](../services/media-worker/AGENTS.md#modelo-de-datos-involucrado) |
+| C10 | S3 API | identity-api, media-worker → MinIO | HTTP/S3 con `@aws-sdk/client-s3` (HEAD, DELETE) · `boto3` (GET, PUT) | Síncrono | [media-worker/AGENTS.md](../services/media-worker/AGENTS.md#modelo-de-datos-involucrado) |
 | C11 | Clave Redis + Pub/Sub | identity-api → sync-core, social-core, analytics, voice-core | `SET token:revoked:{jti} 1 EXAT exp` + `PUBLISH room:{id}:sync REVOKED{jti}`; los consumidores hacen `EXISTS` en el handshake o en cada petición | Asíncrono (aviso) + consulta síncrona | [dominio-reproduccion §6.6](dominio-reproduccion.md#66-retirar-a-un-invitado-f5) · [ADR 0007](adr/0007-revocacion-por-clave-redis-y-cierre-4001.md) |
 | C12 | Redis Pub/Sub + claves | sync-core ↔ sync-core (réplicas) | `room:{id}:sync` (JSON), CAS Lua sobre `room:{id}:sync_state`, ZSET de presencia | Asíncrono (fan-out) | [dominio-reproduccion §7](dominio-reproduccion.md#7-modelo-de-datos-en-redis) · [ADR 0003](adr/0003-redis-pubsub-para-fanout-entre-replicas.md) |
 | C13 | Redis Pub/Sub + claves | social-core ↔ social-core; sync-core → social-core (solo lectura) | `room:{id}:social` (dedup por `event_id`); suscripción de solo lectura a `room:{id}:sync` (comandos para recap y trivias, `REVOKED`) | Asíncrono | [social-core/AGENTS.md § Modelo de datos](../services/social-core/AGENTS.md#modelo-de-datos-involucrado) |
@@ -197,6 +217,7 @@ flowchart LR
 | C17 | WebRTC P2P + STUN/TURN | web ↔ web (mesh) · web → coturn | Audio Opus por DTLS-SRTP entre navegadores; ICE con STUN y relay TURN (`coturn` `:3478`) | Asíncrono (medios en tiempo real) | [ADR 0015](adr/0015-voice-core-en-cpp-con-webrtc-p2p.md) |
 | C19 | Orquestación de arranque | identity-api → sync-core, social-core, analytics | `POST`/`DELETE /internal/events/start/{room_id}`; identidad llama en orden y compensa en orden inverso; deadline de 5 s por dependencia; no se publica por Caddy | Síncrono | Issue #75; `services/identity-api/src/modules/eventStart` |
 | C15 | Redis Stream | identity-api, sync-core, social-core, media-worker → analytics | `XADD analytics:events MAXLEN ~ 100000` → `XREADGROUP` grupo `analytics-workers` + `XACK` tras el commit | Asíncrono, best-effort | [contrato-eventos-analitica](contrato-eventos-analitica.md) · [ADR 0010](adr/0010-eventos-de-analitica-sin-pii.md) |
+| C20 | Almacén documental | social-core → MongoDB | Driver MongoDB; inserta metadatos sin texto en `social.chat_message_meta`, con índice `{room_id, received_at}` y TTL | Síncrono con escritura diferida | [ADR 0025](adr/0025-metadatos-del-chat-en-mongodb.md) |
 
 #### Handshake WebSocket por el gateway (C0)
 
@@ -368,69 +389,101 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 
 ```mermaid
 flowchart TB
-    subgraph browser["Navegador del usuario"]
-        SPA["SPA apps/web<br/>Vite dev :5173<br/>o build estático dist/"]
+    subgraph ClientDevice ["«device» User Client Machine"]
+        Browser["«execution environment» Web Browser<br/>Client SPA (apps/web)"]
     end
 
-    subgraph ext["Servicios externos"]
-        FBA["Firebase Auth<br/>Google"]
-        GK["Claves públicas de Google<br/>JWKS y certificados x509"]
+    subgraph ExtCloud ["«environment» External Cloud Services"]
+        FirebaseAuth["Firebase Auth / Google Identity"]
+        LetsEncrypt["Let's Encrypt ACME CA"]
+        GoogleJWKS["Google Public Keys (JWKS)"]
     end
 
-    subgraph docker["Host Docker - docker compose up -d"]
-        subgraph c_infra["Infraestructura"]
-            PG["tint-postgres<br/>postgres:16-alpine<br/>5432:5432"]
-            RD["tint-redis<br/>redis:7-alpine · AOF<br/>6379:6379"]
-            MI["tint-minio<br/>pgsty/minio:latest<br/>9000:9000 · 9001:9001"]
-            MINIT["tint-minio-init<br/>pgsty/mc:latest<br/>una vez: bucket + regla ILM incoming/ 2 días"]
+    subgraph ServerNode ["«node» Docker Host"]
+        subgraph DockerRuntime ["«execution environment» Docker Engine & Compose"]
+            
+            subgraph SecurityDMZ ["Public Edge Services"]
+                Gateway["«artifact» tint-gateway<br/>(Caddy 2.9 Reverse Proxy)<br/>Ports: 80/443"]
+                Coturn["«artifact» tint-coturn<br/>(STUN/TURN Relay)<br/>Port: 3478 UDP/TCP"]
+            end
+
+            subgraph AppSubnet ["Application Services"]
+                IdentityAPI["«artifact» tint-identity-api (Node 22)"]
+                SocialCore["«artifact» tint-social-core (Go)"]
+                SyncCore["«artifact» tint-sync-core (Go)"]
+                VoiceCore["«artifact» tint-voice-core (C++)"]
+                StreamCore["«artifact» tint-stream-core (C++)"]
+                Analytics["«artifact» tint-analytics (Python)"]
+                MediaWorker["«artifact» tint-media-worker (Python/FFmpeg)"]
+                WebSPA["«artifact» tint-web (Nginx / Static Dist)"]
+            end
+
+            subgraph StorageSubnet ["Private Persistence Subnet"]
+                PostgreSQL[("«artifact» tint-postgres<br/>PostgreSQL 16")]
+                Redis[("«artifact» tint-redis<br/>Redis 7 (AOF)")]
+                MinIO[("«artifact» tint-minio<br/>MinIO S3 Storage")]
+                MongoDB[("«artifact» tint-mongodb<br/>MongoDB 8.0")]
+            end
+
+            subgraph TransientJobs ["Initialization & Utility Jobs"]
+                EnvCheck["«artifact» tint-env-check<br/>(Validation Job)"]
+                MinioInit["«artifact» tint-minio-init<br/>(Bucket Setup)"]
+                MongoInit["«artifact» tint-mongo-init<br/>(Role Setup)"]
+                AuthEmulator["«artifact» tint-firebase-auth-emulator<br/>(Dev Only)"]
+            end
+
+            subgraph Volumes ["Host Storage Volumes"]
+                VolPG[("postgres-data")]
+                VolRD[("redis-data")]
+                VolMI[("minio-data")]
+                VolMDB[("mongo-data")]
+                VolGW1[("gateway-data")]
+                VolGW2[("gateway-config")]
+            end
         end
-        subgraph c_apps["Servicios construidos con build"]
-            WEB["tint-web<br/>nginx<br/>5173:80"]
-            IDP["tint-identity-api<br/>Node 22<br/>8081:8081"]
-            MW["tint-media-worker<br/>python:3.11-slim + ffmpeg<br/>sin puertos"]
-            AN["tint-analytics<br/>python:3.11-slim<br/>8084:8084"]
-            SOC["tint-social-core<br/>distroless/static nonroot<br/>8082:8082"]
-            SYN["tint-sync-core<br/>distroless/static nonroot<br/>8083:8080"]
-            VOI["tint-voice-core<br/>debian:trixie-slim · C++<br/>8085:8085"]
-        end
-        TRN["tint-coturn<br/>coturn/coturn:4.6.3<br/>red del host · 3478 · relay 49160-49200"]
-        V1[("volumen postgres-data")]
-        V2[("volumen redis-data")]
-        V3[("volumen minio-data")]
     end
 
-    WEB -- "sirve la SPA" --> SPA
-    SPA -- "login" --> FBA
-    SPA -- "HTTP :8081" --> IDP
-    SPA -- "WS :8083" --> SYN
-    SPA -- "WS :8082" --> SOC
-    SPA -- "HTTP :8084" --> AN
-    SPA -- "WS :8085" --> VOI
-    SPA -- "STUN/TURN :3478" --> TRN
-    SPA -- "HTTP :9000 firmado" --> MI
-    IDP -- "postgres:5432" --> PG
-    IDP -- "redis:6379" --> RD
-    IDP -- "localhost:9000" --> MI
-    IDP -- "HTTPS" --> GK
-    SOC -- "HTTPS" --> GK
-    PG --- V1
-    RD --- V2
-    MI --- V3
-    MINIT -- "mc mb + mc ilm import" --> MI
-    MW -- "postgres:5432 · redis:6379 · minio:9000" --> PG & RD & MI
-    AN -- "postgres:5432 · redis:6379" --> PG & RD
-    SOC -- "redis:6379" --> RD
-    SYN -- "redis:6379" --> RD
-    VOI -- "redis:6379" --> RD
+    %% Communication Paths (Node-to-Node Associations)
+    Browser ==>|"Communication Path: WAN / TLS (Ports 80, 443)"| Gateway
+    Browser ==>|"Communication Path: WebRTC / STUN-TURN (Port 3478)"| Coturn
+    Gateway ==>|"Communication Path: ACME Cert Exchange"| LetsEncrypt
+    Browser -.->|"Authentication Redirect"| FirebaseAuth
+
+    %% Allocated-to Storage Volume Bindings
+    PostgreSQL --- VolPG
+    Redis --- VolRD
+    MinIO --- VolMI
+    MongoDB --- VolMDB
+    Gateway --- VolGW1
+    Gateway --- VolGW2
+
+    %% Docker Internal Connections
+    Gateway ==>|"Internal Bridge: Traffic Routing"| IdentityAPI
+    Gateway ==>|"Internal Bridge: Traffic Routing"| WebSPA
+    IdentityAPI -.->|"Outbound HTTPS"| GoogleJWKS
+    SocialCore -.->|"Outbound HTTPS"| GoogleJWKS
 ```
 
-- **Contenedores de aplicación:** `web` construye la SPA y la sirve con nginx en `5173`; `identity-api` compila Node 22, aplica las migraciones y escucha en `8081`. El gateway usa ambos servicios por sus nombres internos.
-- **Orden de arranque** (`depends_on`): `env-check` valida `.env` antes de crear servicios; `minio-init` espera a que MinIO esté sano; `identity-api` y `media-worker` esperan a PostgreSQL, Redis y el bucket; analytics espera a PostgreSQL y Redis; los canales esperan a Redis.
-- **Salud y métricas:** gateway, web, identity-api, analytics, social-core, sync-core y voice-core tienen healthcheck; media-worker se comprueba por proceso (no tiene HTTP). Solo sync-core expone `/metrics` (Prometheus). `env-check` y `minio-init` son tareas de una sola ejecución y deben terminar correctamente.
-- **Réplicas:** compose levanta **una** réplica de cada servicio. El diseño soporta N réplicas de sync-core y social-core (Pub/Sub, CAS y `HSETNX` entre réplicas); voice-core solo admite **una** (membresía en memoria, [dominio-voz §9](dominio-voz.md#9-limitaciones-conocidas)). No no hay balanceador ni configuración multirréplica en el repositorio.
+**Leyenda**
+
+| Trazo | Significado |
+| :--- | :--- |
+| `───` línea continua | Asignación o vinculación a almacenamiento persistente |
+| `══▶` línea gruesa | Vía de comunicación principal o flujo de solicitudes enrutadas, como **WAN**, **TLS**, **HTTP**, **WebSocket** o **WebRTC** |
+| `- -▶` línea punteada con flecha | Interacción secundaria o **indirecta**; por ejemplo, autenticación, recuperación de certificados o integración destinada exclusivamente al desarrollo. |
+| `- -` línea punteada | Relación de inicialización o configuración |
+
+- **Contenedores de aplicación:** `web` construye la SPA y la sirve con nginx en `5173`; `identity-api` compila Node 22, aplica las migraciones y escucha en `8081`; `stream-core` expone WHIP/WHEP en `8086` y su puerto UDP. El gateway usa los nombres internos de todos los upstreams.
+- **Servicios externos:** Firebase Auth es el proveedor de identidad en producción; el contenedor `firebase-auth-emulator` solo habilita el login local de desarrollo. Caddy solicita certificados públicos a Let's Encrypt mediante ACME; en local puede usar el certificado autofirmado de Caddy.
+- **Orden de arranque** (`depends_on`): `env-check` valida `.env` antes de crear servicios; `minio-init` espera a que MinIO esté sano; `mongo-init` espera a MongoDB sano; `identity-api` y `media-worker` esperan a PostgreSQL, Redis y el bucket; analytics espera a PostgreSQL y Redis; los canales esperan a Redis.
+- **Salud y métricas:** gateway, web, identity-api, analytics, social-core, sync-core, voice-core y stream-core tienen healthcheck; media-worker se comprueba mediante su endpoint HTTP interno en `:8088`, sin publicarlo al host. Solo sync-core expone `/metrics` (Prometheus). `env-check`, `minio-init` y `mongo-init` son tareas de una sola ejecución y deben terminar correctamente.
+- **Réplicas:** compose levanta **una** réplica de cada servicio. El diseño soporta N réplicas de sync-core y social-core (Pub/Sub, CAS y `HSETNX` entre réplicas); voice-core solo admite **una** (membresía en memoria, [dominio-voz §9](dominio-voz.md#9-limitaciones-conocidas)). No hay balanceador ni configuración multirréplica en el repositorio.
+- **Patrones documentados:** despliegue un contenedor por servicio, entrada única HTTPS mediante gateway, jobs one-shot de validación/inicialización, persistencia con volúmenes Docker, healthchecks de liveness, servicios externos para identidad y certificados, `network_mode: host` para coturn y réplicas horizontales previstas solo donde Redis permite compartir estado.
 
 | Nodo | Artefacto | Puertos (host → contenedor) | Volúmenes | Variables principales |
 | :--- | :--- | :--- | :--- | :--- |
+| `tint-env-check` | Imagen `alpine:3.20`, tarea de validación que termina | — | — | Secretos y niveles de log requeridos |
+| `tint-gateway` | Imagen `caddy:2.9-alpine`, entrada HTTPS y reverse proxy | 80 → 80 · 443 → 443 | `gateway-data:/data` · `gateway-config:/config` | `GATEWAY_HOST`, upstreams `*_UPSTREAM`, `GATEWAY_LOG_LEVEL` |
 | `tint-postgres` | Imagen `postgres:16-alpine` | 5432 → 5432 | `postgres-data:/var/lib/postgresql/data` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` |
 | `tint-redis` | Imagen `redis:7-alpine` (`--appendonly yes`) | 6379 → 6379 | `redis-data:/data` | — |
 | `tint-minio` | Imagen `pgsty/minio` fijada por digest SHA-256 (la oficial no está disponible) | 9000 → 9000 (API) · 9001 → 9001 (consola) | `minio-data:/data` | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_API_CORS_ALLOW_ORIGIN` (de `MINIO_CORS_ALLOW_ORIGIN`) |
@@ -446,7 +499,9 @@ flowchart TB
 | `tint-sync-core` | `build: ./services/sync-core` (multi-stage `golang:1.22-alpine` → `distroless/static-debian12:nonroot`) | 8083 → 8080 | — | `SYNC_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `ALLOWED_ORIGINS` (de `SYNC_ALLOWED_ORIGINS`) |
 | `tint-identity-api` | `build: ./services/identity-api` (Node 22, migraciones al arrancar) | 8081 → 8081 | — | `DATABASE_URL`, `REDIS_URL`, `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_EMULATOR_HOST` (solo desarrollo), `NODE_ENV`, `JWT_*`, `MINIO_*`, `SYNC_CORE_URL`, `SOCIAL_CORE_URL`, `ANALYTICS_URL` |
 | `tint-web` | `build: ./apps/web` (build Vite + nginx) | 5173 → 80 | — | `VITE_IDENTITY_API_URL`, `VITE_FIREBASE_*`, `VITE_SYNC_WS_URL`, `VITE_SOCIAL_WS_URL`, `VITE_SYNC_ENCODING`, `VITE_ANALYTICS_API_URL` |
+| `tint-stream-core` | `build: ./services/stream-core` (C++ + libdatachannel) | 8086 → 8086 · UDP `STREAM_UDP_PORT` | — | `STREAM_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `TURN_*`, `STREAM_UDP_PORT` |
 | Firebase Auth | Servicio externo de Google | HTTPS | — | `FIREBASE_PROJECT_ID` (identity-api, social-core), `VITE_FIREBASE_*` (web) |
+| Let's Encrypt | Servicio externo ACME para certificados públicos de Caddy | HTTPS/ACME | — | `GATEWAY_HOST` y configuración ACME de Caddy |
 
 Los valores por defecto de compose salen del [`.env.example` raíz](../.env.example). `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` deben ser idénticos en identity-api, sync-core, social-core y analytics.
 

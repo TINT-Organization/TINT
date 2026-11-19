@@ -3,6 +3,8 @@ export interface RoomDetails {
   roomId: string;
   roomTitle: string | null;
   roomKind?: string;
+  hostName?: string | null;
+  scheduledStartTime?: string | null;
 }
 
 export interface FetchRoomDetailsOptions {
@@ -16,9 +18,11 @@ const DEFAULT_TIMEOUT_MS = 2500;
 function resolveDefaultApiBase(): string {
   // En Node.js bajo SSR preferimos IDENTITY_API_URL o fallback a localhost:8081/api/v1
   if (typeof process !== 'undefined' && process.env) {
-    if (process.env.IDENTITY_API_URL) return process.env.IDENTITY_API_URL;
-    if (process.env.VITE_IDENTITY_API_URL && /^https?:\/\//i.test(process.env.VITE_IDENTITY_API_URL)) {
-      return process.env.VITE_IDENTITY_API_URL;
+    const raw = process.env.IDENTITY_API_URL || (process.env.VITE_IDENTITY_API_URL && /^https?:\/\//i.test(process.env.VITE_IDENTITY_API_URL) ? process.env.VITE_IDENTITY_API_URL : '');
+    if (raw) {
+      let base = raw.trim().replace(/\/+$/, '');
+      if (!base.endsWith('/api/v1')) base += '/api/v1';
+      return base;
     }
   }
   return 'http://localhost:8081/api/v1';
@@ -62,6 +66,8 @@ export async function fetchRoomDetails(
       roomId?: string;
       roomTitle?: string | null;
       roomKind?: string;
+      hostName?: string | null;
+      scheduledStartTime?: string | null;
     };
 
     return {
@@ -69,6 +75,8 @@ export async function fetchRoomDetails(
       roomId: data.roomId || '',
       roomTitle: data.roomTitle ?? null,
       roomKind: data.roomKind,
+      hostName: data.hostName ?? null,
+      scheduledStartTime: data.scheduledStartTime ?? null,
     };
   } catch {
     return null;
