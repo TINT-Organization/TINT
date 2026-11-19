@@ -403,9 +403,8 @@ jobs:
              [ "${{ needs.stream-load-smoke.result }}" != "success" ] || \
              [ "${{ needs.compose-lint.result }}" != "success" ] || \
              [ "${{ needs.gitleaks.result }}" != "success" ] || \
-             [ "${{ needs.observability-smoke.result }}" != "success" ]; then
              [ "${{ needs.android.result }}" != "success" ] || \
-             [ "${{ needs.sync-load-smoke.result }}" != "success" ]; then
+             [ "${{ needs.observability-smoke.result }}" != "success" ]; then
             echo "::error::Pruebas o cobertura (≥ ${COVERAGE_MIN}%) no superadas. Merge bloqueado."
             exit 1
           fi
