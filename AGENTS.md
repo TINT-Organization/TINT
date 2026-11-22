@@ -12,6 +12,7 @@ Este repositorio es un monorepo multi-lenguaje (Go, TypeScript, Python y C++). *
 | Social & Gamificación | `services/social-core` | Go, Redis | [services/social-core/AGENTS.md](services/social-core/AGENTS.md) |
 | Media Worker | `services/media-worker` | Python 3.11, FFmpeg, MinIO | [services/media-worker/AGENTS.md](services/media-worker/AGENTS.md) |
 | Analítica | `services/analytics` | Python 3.11, Redis Streams, PostgreSQL, API HTTP de solo lectura | [services/analytics/AGENTS.md](services/analytics/AGENTS.md) |
+| Bitácora de auditoría | `services/audit-log` | Python 3.11, Redis Streams, PostgreSQL (solo INSERT + cadena de hashes), sin API pública | [services/audit-log/AGENTS.md](services/audit-log/AGENTS.md) |
 | Voz | `services/voice-core` | C++23, Boost.Beast, hiredis, WebRTC P2P (solo señalización) | [services/voice-core/AGENTS.md](services/voice-core/AGENTS.md) |
 | Transmisión en vivo | `services/stream-core` | C++23, libdatachannel v0.24.6 (SFU, WHIP/WHEP), Boost.Beast, hiredis | [services/stream-core/AGENTS.md](services/stream-core/AGENTS.md) |
 | Infra / CI | raíz, `.github/`, `scripts/` | Docker Compose, GitHub Actions | este archivo |
@@ -33,7 +34,7 @@ La documentación de features vive en [`docs/`](docs/README.md), con diagramas M
 2. **TDD obligatorio:** Red → Green → Refactor. Cobertura mínima **85 %** por servicio; el CI (`.github/workflows/ci-pipeline.yml`) bloquea el merge si no se cumple.
 3. **Conventional Commits en español:** `tipo(alcance): descripción`, con el dominio como alcance: `feat(sync-core): …`, `fix(identity-api): …`, `docs(web): …`, `perf(sync-core): …`, `ci: …`, `chore: …`. El cuerpo explica el *porqué* y, si hay mediciones, las incluye.
 4. **Ramas:** `main` (producción) y `develop` (integración) están protegidas. Trabaja en `feat/*`, `fix/*` o `chore/*` y abre el PR hacia `develop`.
-5. **Infraestructura local:** `docker compose up -d` (PostgreSQL, Redis, MinIO, media-worker, analytics, social-core, sync-core, voice-core, stream-core, coturn y el Firebase Auth Emulator para el login local del host, [ADR 0024](docs/adr/0024-login-local-con-firebase-auth-emulator.md)). **Nunca subas `.env`** ni credenciales; documenta las variables nuevas en el `.env.example` correspondiente. Los secretos se inyectan en tiempo de creación desde `.env` sin fallbacks inseguros en Compose (ADR 0022).
+5. **Infraestructura local:** `docker compose up -d` (PostgreSQL, Redis, MinIO, media-worker, analytics, audit-log, social-core, sync-core, voice-core, stream-core, coturn y el Firebase Auth Emulator para el login local del host, [ADR 0024](docs/adr/0024-login-local-con-firebase-auth-emulator.md)). **Nunca subas `.env`** ni credenciales; documenta las variables nuevas en el `.env.example` correspondiente. Los secretos se inyectan en tiempo de creación desde `.env` sin fallbacks inseguros en Compose (ADR 0022).
 6. **Verificación:** `make test-all` antes de abrir un PR, más los comandos propios del dominio.
 7. **Archivos ajenos:** los `.docx` de planeación en la raíz no se versionan. No los agregues a commits.
 8. **Dependencias:** no agregues dependencias sin justificarlas en el commit y en el Stack Técnico del `AGENTS.md` del dominio. Fija versiones exactas en Go y prefiere versiones exactas en npm.
@@ -55,9 +56,10 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | API WHIP/WHEP `/api/v1/stream/*` + DataChannel `stream-events`; internos `/internal/events/start/{id}` y `/api/v1/internal/rooms/{id}/disable` | stream-core ↔ web, identity-api | [dominio-transmision §3–6](docs/dominio-transmision.md#3-api-whipwhep-apiv1stream) |
 | `TURN_SECRET` (credenciales TURN efímeras) | voice-core, stream-core ↔ coturn | `.env.example` raíz |
 | Puertos locales: social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, stream-core 8086 (+ UDP 8087), coturn 3478, Firebase Auth Emulator 9099 (solo desarrollo, `127.0.0.1`) | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
-| Observabilidad y salud (`/healthz` con `status`/`service`; logs JSON a stdout con `LOG_LEVEL` configurable) | Todos los servicios (gateway, web, identity, sync, social, media-worker, analytics, voice, stream, coturn) | [ADR 0021](docs/adr/0021-observabilidad-salud-y-logs.md) · [arquitectura §8.2](docs/arquitectura.md#82-observabilidad-salud-y-logs) |
+| Observabilidad y salud (`/healthz` con `status`/`service`; logs JSON a stdout con `LOG_LEVEL` configurable) | Todos los servicios (gateway, web, identity, sync, social, media-worker, analytics, audit-log, voice, stream, coturn) | [ADR 0021](docs/adr/0021-observabilidad-salud-y-logs.md) · [arquitectura §8.2](docs/arquitectura.md#82-observabilidad-salud-y-logs) |
 | Inyección de secretos exclusivamente por entorno (`.env`, `env-check` fail-closed, sin fallbacks en Compose, `docker compose up -d --no-build`) | infra ↔ todos los servicios | [ADR 0022](docs/adr/0022-secretos-por-variables-de-entorno.md) · [arquitectura §7.4](docs/arquitectura.md#74-gestion-de-secretos-y-variables-de-entorno-ops-05-adr-0022) |
 | API REST `/api/v1` (incl. bloqueo por dispositivo `room_bans` + `deviceId` en el claim, y biblioteca `GET /videos`) | identity-api → web | [identity-api/AGENTS.md](services/identity-api/AGENTS.md#api) |
+| Stream `audit:events` (acciones sensibles y accesos negados; sin PII, best-effort) | identity-api → audit-log | [audit-log/AGENTS.md](services/audit-log/AGENTS.md#contrato-del-stream-auditevents) |
 | Stream `analytics:events` (sin PII) | identity-api, social-core, sync-core, media-worker → analytics | [docs/contrato-eventos-analitica.md](docs/contrato-eventos-analitica.md) |
 | API de lectura de analytics (`/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline`) + `analytics-ticket` (`POST /api/v1/rooms/:id/analytics-ticket`) | identity-api → web → analytics | [analytics/AGENTS.md](services/analytics/AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084) |
 
@@ -77,7 +79,7 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | `identity-api` | `npm ci` · `npm run typecheck` · `npx vitest run --coverage` |
 | `apps/web` | `npm ci` · `npm run lint` · `npm run typecheck` · `npx vitest run --coverage` · `npm run build` |
 | `apps/android` | `./gradlew testDebugUnitTest koverVerifyDebug assembleDebug` (JDK 17) |
-| Python (`media-worker`, `analytics`) | `ruff check . && ruff format --check .` · `pytest --cov=src --cov-fail-under=85` |
+| Python (`media-worker`, `analytics`, `audit-log`) | `ruff check . && ruff format --check .` · `pytest --cov=src --cov-fail-under=85` |
 | C++ (`voice-core`) | `clang-format --dry-run --Werror` · `ctest` con `-DVOICE_SANITIZE=address` y `=thread` · `gcovr --fail-under-line 85` (`make test-cpp`; ver su AGENTS.md para correrlo en Docker) |
 | Carga del Canal Sync | `k6 run -e VUS=50 -e DURATION=20s services/sync-core/loadtest/sync.js` (CI); 500 VUs desde otra máquina |
 | Infra / Secretos | `make secrets` (contrato estático y sintaxis compose) · escaneo Gitleaks en CI |

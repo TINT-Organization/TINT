@@ -60,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [media-worker, analytics]
+        service: [media-worker, analytics, audit-log]
     defaults:
       run:
         working-directory: services/${{ matrix.service }}
@@ -380,7 +380,7 @@ jobs:
       - name: Smoke test con stack reducido
         run: |
           python3 scripts/observability_smoke.py \
-            --services "postgres,redis,minio,minio-init,analytics,media-worker,identity-api,sync-core,social-core,gateway,web" \
+            --services "postgres,redis,minio,minio-init,analytics,audit-log,media-worker,identity-api,sync-core,social-core,gateway,web" \
             --timeout 300
 
   ci-gate:

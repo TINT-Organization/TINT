@@ -40,6 +40,7 @@ DOCKERFILES = [
     ROOT / "services" / "sync-core" / "Dockerfile",
     ROOT / "services" / "social-core" / "Dockerfile",
     ROOT / "services" / "analytics" / "Dockerfile",
+    ROOT / "services" / "audit-log" / "Dockerfile",
     ROOT / "services" / "media-worker" / "Dockerfile",
     ROOT / "services" / "voice-core" / "Dockerfile",
     ROOT / "services" / "stream-core" / "Dockerfile",

@@ -68,6 +68,15 @@ HEALTHZ_PROBES: dict[str, dict[str, str | list[str]]] = {
         ],
         "service": "analytics",
     },
+    "audit-log": {
+        "container": "tint-audit-log",
+        "cmd": [
+            "python",
+            "-c",
+            "import os, urllib.request; print(urllib.request.urlopen(f'http://localhost:{os.environ.get(\"AUDIT_LOG_PORT\",\"8089\")}/healthz').read().decode())",
+        ],
+        "service": "audit-log",
+    },
     "media-worker": {
         "container": "tint-media-worker",
         "cmd": [
@@ -101,6 +110,7 @@ APP_SERVICES = {
     "sync-core",
     "social-core",
     "analytics",
+    "audit-log",
     "media-worker",
     "voice-core",
     "stream-core",
