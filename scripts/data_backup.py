@@ -8,7 +8,7 @@ Usa `docker compose` (exec y run), así que no depende de los nombres de los vol
 tener herramientas instaladas en el equipo. Respeta COMPOSE_PROJECT_NAME y COMPOSE_FILE.
 
 | Almacén    | Respaldo                                         | Restauración                               |
-| PostgreSQL | pg_dump -Fc de POSTGRES_DB (identity-api, analytics) | pg_restore --clean --if-exists          |
+| PostgreSQL | pg_dump -Fc de POSTGRES_DB (identity-api, analytics, audit-log) | pg_restore --clean --if-exists          |
 | MongoDB    | mongodump --archive --gzip                       | mongorestore --drop (sin admin ni config)  |
 | Redis      | redis-cli --rdb                                  | carga el RDB con AOF apagado y lo reescribe |
 | MinIO      | mc mirror del bucket                             | mc mirror --remove hacia el bucket         |

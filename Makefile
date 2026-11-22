@@ -1,5 +1,5 @@
 GO_SERVICES := services/sync-core services/social-core
-PY_SERVICES := services/media-worker services/analytics
+PY_SERVICES := services/media-worker services/analytics services/audit-log
 COVERAGE_MIN := 85
 
 NODE_SERVICES := services/identity-api

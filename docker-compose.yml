@@ -271,6 +271,33 @@ services:
       timeout: 5s
       retries: 5
 
+  # Bitácora de auditoría (Prototipo 3, escenario 5): consume audit:events y guarda las acciones
+  # sensibles en audit_entries (solo INSERT + cadena de hashes). Interna: sin puerto publicado ni
+  # ruta en el gateway; se consulta con `docker compose exec audit-log python -m audit_log.list`.
+  audit-log:
+    build: ./services/audit-log
+    container_name: tint-audit-log
+    restart: unless-stopped
+    <<: *env-check
+    depends_on:
+      env-check:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tint}
+      REDIS_URL: redis://redis:6379
+      AUDIT_LOG_PORT: "8089"
+      AUDIT_LOG_CONSUMER: audit-log-1
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen(f\"http://localhost:{os.environ['AUDIT_LOG_PORT']}/healthz\", timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Canal Social (/ws/social): chat en vivo con historial corto en Redis.
   social-core:
     build: ./services/social-core

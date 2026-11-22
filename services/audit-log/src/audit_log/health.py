@@ -13,7 +13,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8089
-HEALTH_BODY = b'{"status":"ok"}'
+# `status` y `service`, como el resto de servicios (ADR 0021).
+HEALTH_BODY = b'{"status":"ok","service":"audit-log"}'
 
 
 class HealthHandler(BaseHTTPRequestHandler):

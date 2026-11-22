@@ -26,6 +26,7 @@ LONG_RUNNING = {
     "minio",
     "media-worker",
     "analytics",
+    "audit-log",
     "social-core",
     "sync-core",
     "identity-api",
@@ -40,6 +41,7 @@ LONG_RUNNING = {
 APP_SERVICES = {
     "media-worker",
     "analytics",
+    "audit-log",
     "social-core",
     "sync-core",
     "identity-api",
@@ -54,6 +56,7 @@ DOCKERFILES = {
     "sync-core": ROOT / "services" / "sync-core" / "Dockerfile",
     "social-core": ROOT / "services" / "social-core" / "Dockerfile",
     "analytics": ROOT / "services" / "analytics" / "Dockerfile",
+    "audit-log": ROOT / "services" / "audit-log" / "Dockerfile",
     "media-worker": ROOT / "services" / "media-worker" / "Dockerfile",
     "voice-core": ROOT / "services" / "voice-core" / "Dockerfile",
     "stream-core": ROOT / "services" / "stream-core" / "Dockerfile",

@@ -21,7 +21,7 @@ def base_url():
 def test_healthz_returns_ok(base_url):
     with urllib.request.urlopen(f"{base_url}/healthz", timeout=2) as response:
         assert response.status == 200
-        assert json.loads(response.read()) == {"status": "ok"}
+        assert json.loads(response.read()) == {"status": "ok", "service": "audit-log"}
         assert response.headers["Cache-Control"] == "no-store"
 
 
