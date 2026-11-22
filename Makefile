@@ -75,7 +75,7 @@ test-stream:
 	  bash -euo pipefail -c 'clang-format --dry-run --Werror $$(find src tests -name "*.cpp" -o -name "*.hpp") && \
 	    cmake -S . -B build-cov -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSTREAM_COVERAGE=ON && cmake --build build-cov && \
 	    ctest --test-dir build-cov --output-on-failure && \
-	    gcovr --root . --filter src/ --exclude src/main.cpp --gcov-ignore-errors=no_working_dir_found build-cov --fail-under-line $(COVERAGE_MIN)'
+	    gcovr --root . --filter src/ --exclude src/main.cpp --gcov-ignore-errors=no_working_dir_found --gcov-ignore-parse-errors=negative_hits.warn_once_per_file build-cov --fail-under-line $(COVERAGE_MIN)'
 
 # Prueba rápida contra stream-core levantado (docker compose up -d stream-core).
 smoke-stream:
