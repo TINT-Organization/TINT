@@ -21,6 +21,7 @@ Documentación de referencia: [README del servicio (cómo funciona por dentro)](
 - **Guest token** (`role: participant`, 4 h) al reclamar una invitación, registrado en `guest_sessions`.
 - **Sync-ticket** (`role: host`, 10 min) para el Canal Sync y **analytics-ticket** (mismos claims y TTL) para la API de lectura de analytics.
 - Publicar eventos de analítica en `analytics:events` (best-effort, sin datos personales).
+- Publicar las acciones sensibles y los accesos negados en `audit:events` para la bitácora de auditoría (`services/audit-log`; best-effort, sin datos personales).
 - Subida de vídeo: reservar (`videos`), firmar el PUT directo a MinIO, confirmar y encolar en `media:uploads`.
 - Vídeo de la sala (`media_id`, `media_key`) y URL firmada de reproducción, con el estado del procesamiento.
 - Salas: renombrar y borrado lógico (`status`). Borrar una sala revoca todas sus sesiones de invitado activas.
@@ -48,6 +49,7 @@ Documentación de referencia: [README del servicio (cómo funciona por dentro)](
 | `token:revoked:{jti}` | Redis String | Marca de revocación con `EXAT` = `exp` del token (la lee sync-core) |
 | `media:uploads` | Redis Stream | `XADD MAXLEN ~ 10000 * video_id <id>` al confirmar una subida (lo consume media-worker, grupo `media-workers`). El tope evita que los eventos ya confirmados (`XACK`) se acumulen para siempre |
 | `analytics:events` | Redis Stream | `XADD MAXLEN ~ 100000 *` de `user_login`, `room_created`, `room_closed` e `invitation_claimed` (lo consume analytics). Ver [Eventos de analítica](#eventos-de-analítica) |
+| `audit:events` | Redis Stream | `XADD MAXLEN ~ 100000 *` de las acciones sensibles y de `access.denied` (lo consume audit-log, grupo `audit-workers`). Ver [Eventos de auditoría](#eventos-de-auditoría) |
 | `room:{id}:sync` | Redis Pub/Sub | Se publica `REVOKED{jti}` y `ROOM_CLOSED` (`{"type":"ROOM_CLOSED","event_id","room_id","reason","occurred_at"}`, `reason` `host_ended`/`grace_expired`) |
 | `room:{id}:closed` | Redis String | `1` sin TTL al deshabilitar la sala; sync/social/voice/stream la consultan en cada handshake (cierre `4010`) |
 | `room:{id}:kind` | Redis String | `live` con `EX 86400` (como `room:{id}:stream:enabled`), al iniciar una sala live; voice-core la usa para el modo escenario |
@@ -107,6 +109,26 @@ Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la s
 - `user_id` del host es `users.provider_sub` (uid de Firebase), **no** `users.id`. Nunca `email`, `displayName` ni `nick`.
 - **Best-effort:** se llama con `void` después de responder; la promesa nunca rechaza (ni si `xadd` lanza) y el error solo se registra con el tipo del evento. Un fallo de Redis no cambia la respuesta.
 
+### Eventos de auditoría
+`src/modules/audit/audit.events.ts` → `auditHostAction(user, action, roomId)`, `auditDenied({ user?, roomId? })` y `publishAuditEvent(event)`. Contrato en [services/audit-log/AGENTS.md](../audit-log/AGENTS.md#contrato-del-stream-auditevents). Bitácora del Prototipo 3, escenario 5.
+
+| Ruta o middleware | `action` | Cuándo |
+| :--- | :--- | :--- |
+| `POST /rooms` · `POST /events/start` | `room.create` | Tras crear la sala |
+| `PATCH /rooms/:id` | `room.update` | Tras renombrar |
+| `DELETE /rooms/:id` | `room.delete` | Solo el primer borrado exitoso (como `room_closed`) |
+| `POST /rooms/:id/end` | `room.end` | Solo si la sala quedó `disabled` |
+| `POST /internal/rooms/:id/disable` | `room.disable` | Igual; `actor_role=service` y **sin `actor_id`** (lo pide stream-core) |
+| `POST /rooms/:id/invitations` | `invitation.create` | Tras crearla |
+| `POST /invitations/:code/revoke` | `invitation.revoke` | Tras revocarla (el 403 publica `access.denied`) |
+| `POST /rooms/:id/guests/:jti/revoke` | `guest.revoke` | Tras revocar |
+| `POST /rooms/:id/bans` · `DELETE /rooms/:id/bans/:banId` | `ban.create` · `ban.delete` | Tras guardar o borrar el bloqueo |
+| `requireAuthHost` (401) · `requireRoomOwner` (403) | `access.denied` | `outcome=denied`; el 401 va sin actor. El 500 de la BD no publica |
+
+- Campos: `event_id` (UUID v4), `action`, `outcome` (`ok`/`denied`), `occurred_at`, `source=identity-api`; opcionales `actor_id` = `users.provider_sub` (nunca `users.id`), `actor_role` (`host`/`service`) y `room_id` (**solo si es un UUID**: un id inventado en la URL no llega a la bitácora). Nunca email, nombre, nick, `sub` del invitado, `jti`, IP ni tokens.
+- Si la acción no ocurre (400, 404, 409, 410, 503) no se publica nada.
+- **Best-effort**, igual que analítica: se llama con `void` después de responder; la promesa nunca rechaza y el error solo se registra con la acción. Un fallo de Redis no cambia la respuesta; el hueco se ve en la medición "hechas vs registradas".
+
 ## Reglas de Dominio
 1. **Contratos compartidos:** los claims de los tokens, la clave `token:revoked:{jti}` y el payload `REVOKED` son contratos con sync-core. Cualquier cambio se coordina y se documenta.
 2. **Falla cerrado:** si no se puede comprobar una revocación (BD o Redis caídos), responde 503; nunca aceptes el token por defecto.
@@ -122,7 +144,7 @@ Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la s
 | :--- | :--- | :--- |
 | `IDENTITY_API_PORT` | `8081` | Puerto HTTP |
 | `DATABASE_URL` | `postgres://tint:tint@localhost:5432/tint` | PostgreSQL |
-| `REDIS_URL` | `redis://localhost:6379` | Revocación, `media:uploads` y `analytics:events` |
+| `REDIS_URL` | `redis://localhost:6379` | Revocación, `media:uploads`, `analytics:events` y `audit:events` |
 | `FIREBASE_PROJECT_ID` | — (**obligatoria**) | `iss`/`aud` de los ID tokens |
 | `FIREBASE_AUTH_EMULATOR_HOST` | — (compose dev: `firebase-auth-emulator:9099`) | **Solo desarrollo.** Activa el modo emulador: acepta ID tokens `alg: none` (firma vacía) con `iss`/`aud`/`exp`/`sub` válidos. Falla cerrado: el proceso no arranca con `NODE_ENV=production` ni con un `FIREBASE_PROJECT_ID` sin prefijo `demo-` ([ADR 0024](../../docs/adr/0024-login-local-con-firebase-auth-emulator.md)) |
 | `NODE_ENV` | `development` (imagen: `production`; compose dev: `development`) | `production` prohíbe el modo emulador |

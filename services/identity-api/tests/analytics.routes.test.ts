@@ -202,9 +202,10 @@ describe('eventos de analítica emitidos por las rutas', () => {
         expect(claimed.status).toBe(200);
         expect(typeof claimed.body.token).toBe('string');
 
-        expect(xadd).toHaveBeenCalledTimes(4);
+        // Solo analytics:events; crear y borrar también publican en audit:events (escenario 5).
+        expect(xadd.mock.calls.filter((call) => call[0] === 'analytics:events')).toHaveLength(4);
         await new Promise((resolve) => setImmediate(resolve));
-        expect(log).toHaveBeenCalledTimes(4);
+        expect(log.mock.calls.filter(([message]) => String(message).startsWith('analytics:'))).toHaveLength(4);
       });
     }
   });
