@@ -134,6 +134,35 @@ class BenchWiringTests(unittest.TestCase):
         )
 
 
+class ShellArgumentTests(unittest.TestCase):
+    """Etiquetas y nombres de archivo acaban en una línea de cmd.exe por SSH: solo caracteres seguros."""
+
+    def test_accepts_plain_tags_and_file_names(self):
+        for value in ("antes", "s3", "v1.2-rc_1", "compose.segmentation.yml"):
+            self.assertEqual(run.safe_arg(value, "x"), value)
+
+    def test_rejects_cmd_metacharacters_and_path_tricks(self):
+        for value in ("a&calc", "a b", "a|b", "..\\x", "../x", "a;b", "$(x)", "a\"b", "a%PATH%"):
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                run.safe_arg(value, "image-tag")
+
+
+class BuildScriptTests(unittest.TestCase):
+    def test_script_builds_with_the_tag_and_logs_the_exit_code(self):
+        script = run.build_script("antes")
+        self.assertIn(r"cd /d C:\tint\bench\tint-monorepo", script)
+        self.assertIn("set BENCH_IMAGE_TAG=antes", script)
+        self.assertIn("docker compose build", script)
+        self.assertIn(r"C:\tint\bench\build-antes.log", script)
+        self.assertIn("EXIT=%ERRORLEVEL%", script)
+        self.assertTrue(script.startswith("@echo off"))
+
+    def test_build_runs_in_an_interactive_session_because_the_ssh_one_has_no_credential_store(self):
+        text = (ROOT / "bench" / "run.py").read_text(encoding="utf-8")
+        self.assertIn("schtasks /Create", text)
+        self.assertIn("/IT", text)
+
+
 class OverrideFilterTests(unittest.TestCase):
     SAMPLE = (
         "# cabecera\nservices:\n  gateway:\n    container_name: !reset null\n"

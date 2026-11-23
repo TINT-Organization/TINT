@@ -43,12 +43,22 @@ SSH_NOISE = ("post-quantum", "store now, decrypt later", "may need to be upgrade
 CALIBRATION_RATES = [25, 50, 100, 200, 400, 800, 1200]
 
 
+SAFE_ARG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def safe_arg(value: str, name: str) -> str:
+    """Valida un valor que acaba en una línea de cmd.exe por SSH (etiqueta de imagen, nombre de archivo)."""
+    if value and not SAFE_ARG.fullmatch(value):
+        raise SystemExit(f"--{name}: solo letras, números, punto, guion y guion bajo (recibido: {value!r})")
+    return value
+
+
 class Ctx:
     def __init__(self, args: argparse.Namespace):
         self.host = args.host
         self.ip = args.ip
         self.port = args.https_port
-        self.image_tag = getattr(args, "image_tag", "")
+        self.image_tag = safe_arg(getattr(args, "image_tag", ""), "image-tag")
 
     @property
     def base(self) -> str:
@@ -170,7 +180,7 @@ def cmd_prepare(ctx: Ctx, args: argparse.Namespace) -> None:
         filtered = Path(tmp) / "compose.bench.yml"
         filtered.write_text(override, encoding="utf-8")
         scp(ctx, filtered, "C:/tint/bench/")
-    extra = args.extra_compose
+    extra = safe_arg(args.extra_compose, "extra-compose")
     if extra:
         scp(ctx, BENCH / extra, "C:/tint/bench/")
     secret = secrets.token_hex(24)
