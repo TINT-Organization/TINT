@@ -14,6 +14,8 @@ $public = 'C:\tint\tint-monorepo'
 if (-not (Test-Path $repo)) { git clone --quiet $public $repo }
 Set-Location $repo
 git fetch --quiet origin
+# Un commit que solo existe como rama remota del clon público (origin/feat/…) no baja con `fetch origin`.
+git fetch --quiet $public $Commit 2>$null
 git checkout --quiet --force $Commit
 if ($LASTEXITCODE -ne 0) { throw "no se pudo fijar $Commit" }
 
