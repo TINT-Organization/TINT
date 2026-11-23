@@ -325,11 +325,48 @@ def cmd_up(ctx: Ctx, _args: argparse.Namespace) -> None:
     print("stack del banco sano")
 
 
+BUILD_TASK = "TINT Bench Build"
+
+
+def build_script(tag: str) -> str:
+    """.cmd que construye las imágenes con la etiqueta y deja el código de salida en el log."""
+    log = f"{REMOTE_BENCH}\\build-{tag}.log"
+    return (f"@echo off\r\ncd /d {REMOTE_REPO}\r\nset BENCH_IMAGE_TAG={tag}\r\n"
+            f"docker compose build > {log} 2>&1\r\necho EXIT=%ERRORLEVEL% >> {log}\r\n")
+
+
 def cmd_build(ctx: Ctx, _args: argparse.Namespace) -> None:
-    """Construye en el servidor las imágenes del commit fijado con la etiqueta --image-tag."""
+    """Construye en el servidor las imágenes del commit fijado con la etiqueta --image-tag.
+
+    Por SSH, Docker Desktop de Windows no puede leer el almacén de credenciales ("A specified logon
+    session does not exist") y no descarga las imágenes base. Se lanza entonces como tarea programada
+    interactiva (/IT) del usuario con sesión iniciada, la misma que usa "TINT Deploy".
+    """
     if not ctx.image_tag:
         raise SystemExit("build necesita --image-tag (p. ej. --image-tag antes)")
-    print(compose(ctx, "build", timeout=3600))
+    tag = ctx.image_tag
+    log = f"{REMOTE_BENCH}\\build-{tag}.log"
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / f"build-{tag}.cmd"
+        script.write_bytes(build_script(tag).encode())
+        scp(ctx, script, "C:/tint/bench/")
+    user = ssh(ctx, "whoami")
+    ssh(ctx, f"if exist {log} del {log}")
+    ssh(ctx, f'schtasks /Create /F /TN "{BUILD_TASK}" /SC ONCE /ST 23:59 /IT /RU "{user}" /TR "{REMOTE_BENCH}\\build-{tag}.cmd"')
+    ssh(ctx, f'schtasks /Run /TN "{BUILD_TASK}"')
+    try:
+        deadline = time.time() + 3600
+        while time.time() < deadline:
+            time.sleep(30)
+            out = ssh(ctx, f"type {log}", check=False)
+            if "EXIT=" in out:
+                print("\n".join(out.splitlines()[-15:]))
+                if "EXIT=0" not in out:
+                    raise RuntimeError("docker compose build falló en el servidor (ver el log)")
+                return
+        raise RuntimeError("el build no terminó en 60 min")
+    finally:
+        ssh(ctx, f'schtasks /Delete /F /TN "{BUILD_TASK}"', check=False)
 
 
 def cmd_segmentation(ctx: Ctx, args: argparse.Namespace) -> None:
