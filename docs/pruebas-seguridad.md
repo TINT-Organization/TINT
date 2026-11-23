@@ -8,7 +8,7 @@ Mide el costo en rendimiento de cada medida de seguridad con la misma carga, ant
 | :--- | :--- | :--- |
 | Latencia de la API | p50, p95 y p99 de `http_req_duration` a tasa fija (50 % de la capacidad calibrada) | k6 (`bench/k6/api.js`, ejecutor `constant-arrival-rate`) |
 | Capacidad | req/s máximos sostenidos con p95 ≤ 500 ms, errores ≤ 1 % y sin iteraciones perdidas | calibración por escalones en `bench/run.py` |
-| Ráfaga | respuestas 429 sobre el total a 300 req/s durante 15 s | k6 (`PHASE=burst`) |
+| Ráfaga | respuestas 429 sobre el total a 300 req/s durante 15 s, de **un solo cliente** (un token, `data.seeded[0]`; [ADR 0028](adr/0028-limites-y-cabeceras-de-seguridad-en-el-gateway.md)) | k6 (`PHASE=burst`) |
 | Canal Sync | p99 de broadcast (< 100 ms), p99 de drift (< 500 ms), p95 de `ws_connecting` (< 1 s) | `services/sync-core/loadtest/sync.js` por el gateway |
 | Recursos | CPU media y máxima, memoria máxima por contenedor y por fase | `docker stats` por SSH |
 | Superficie | puertos abiertos, rutas internas, HSTS, TLS, bases de datos accesibles desde fuera | `nmap`, `curl`, `testssl.sh` (`bench/security_checks.py`) |
@@ -35,6 +35,8 @@ python3 bench/summarize.py bench/results/antes-develop [bench/results/despues]
 ```
 
 `--smoke` hace una corrida corta de verificación. Para el "después": `prepare --commit <sha>` sobre la rama con la medida, `build` de sus imágenes con una etiqueta, `--image-tag` en `measure` y `--rate` con la tasa de `calibration.json` del "antes" para comparar a la misma carga. Los resultados crudos quedan en `bench/results/` (ignorado por git); solo se versiona la tabla resumida de esta página.
+
+Desde ADR 0028 el gateway es una imagen propia (`gateway/Dockerfile`, Caddy con `caddy-ratelimit`): en el clon del banco hay que construirla junto con las demás (`docker compose build`, con `BENCH_IMAGE_TAG`), porque `up --no-build` ya no la descarga. La ráfaga de la línea base se repartió entre 20 tokens; desde ADR 0028 sale de uno solo. Sin límite de tasa el resultado es el mismo (0 respuestas 429), así que la línea base sigue sirviendo de "antes".
 
 Requisitos en el portátil: `k6`, `nmap`, `ssh` con alias al servidor y, opcionalmente, `testssl.sh`.
 

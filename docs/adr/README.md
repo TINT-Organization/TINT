@@ -35,6 +35,7 @@ Cada ADR de esta carpeta se escribió a partir de evidencia del repositorio (có
 | [0025](0025-metadatos-del-chat-en-mongodb.md) | Metadatos del chat en MongoDB, sin el texto (SOC-07, DAT-02) | Propuesta | 2026-11-02 | social-core, Infraestructura |
 | [0026](0026-app-android-nativa-kotlin.md) | App Android nativa en Kotlin | Aceptada | 2026-10-31 | android (nuevo), infra |
 | [0027](0027-segmentacion-de-red-por-capas.md) | Segmentación de red: una red de Compose por capa | Aceptada | 2026-11-23 | Infraestructura |
+| [0028](0028-limites-y-cabeceras-de-seguridad-en-el-gateway.md) | Límites de tasa y de tamaño y cabeceras de seguridad en el gateway (Prototipo 3, escenario 2) | Propuesta | 2026-11-23 | Infraestructura |
 | [0029](0029-hsts-y-canal-seguro-en-el-gateway.md) | HSTS en el gateway para cerrar el canal seguro (Escenario 1) | Propuesta | 2026-11-23 | Infraestructura, CI |
 
 ```mermaid
@@ -68,6 +69,7 @@ flowchart LR
     A17 --> A25["0025 metadatos del chat en MongoDB"]
     A12 --> A26["0026 app Android nativa en Kotlin"]
     A20 --> A27["0027 segmentación de red por capas"]
+    A20 --> A28["0028 límites y cabeceras en el gateway"]
     A20 --> A29["0029 HSTS y canal seguro (Escenario 1)"]
 ```
 
