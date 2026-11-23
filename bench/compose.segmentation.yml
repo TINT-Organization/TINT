@@ -1,0 +1,28 @@
+# Override del "después" del escenario 3 (segmentación de red, ADR 0027). Se suma al COMPOSE_FILE del
+# banco con `python3 bench/run.py prepare --extra-compose compose.segmentation.yml`.
+# Reproduce lo que docker-compose.production.yml hace con la red y los puertos de las bases, sin fijar
+# NODE_ENV=production (identity-api se niega a arrancar con el Firebase Auth Emulator en producción y
+# el banco lo necesita para fabricar tokens, ADR 0024).
+networks:
+  data:
+    internal: true
+
+services:
+  postgres:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  mongodb:
+    ports: !reset []
+
+  # Solo la API de MinIO (URLs firmadas); la consola 9001 no se publica.
+  minio:
+    ports: !override
+      - "9000:9000"
+
+  # Solo el puerto UDP de medios; la señalización WHIP/WHEP entra por el gateway.
+  stream-core:
+    ports: !override
+      - "${STREAM_UDP_PORT:-8087}:${STREAM_UDP_PORT:-8087}/udp"
