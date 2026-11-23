@@ -403,7 +403,7 @@ flowchart TB
         subgraph DockerRuntime ["«execution environment» Docker Engine & Compose"]
             
             subgraph SecurityDMZ ["Public Edge Services"]
-                Gateway["«artifact» tint-gateway<br/>(Caddy 2.9 Reverse Proxy)<br/>Ports: 80/443"]
+                Gateway["«artifact» tint-gateway<br/>(Caddy 2.9.1 + caddy-ratelimit)<br/>Ports: 80/443"]
                 Coturn["«artifact» tint-coturn<br/>(STUN/TURN Relay)<br/>Port: 3478 UDP/TCP"]
             end
 
@@ -483,7 +483,7 @@ flowchart TB
 | Nodo | Artefacto | Puertos (host → contenedor) | Volúmenes | Variables principales |
 | :--- | :--- | :--- | :--- | :--- |
 | `tint-env-check` | Imagen `alpine:3.20`, tarea de validación que termina | — | — | Secretos y niveles de log requeridos |
-| `tint-gateway` | Imagen `caddy:2.9-alpine`, entrada HTTPS y reverse proxy | 80 → 80 · 443 → 443 | `gateway-data:/data` · `gateway-config:/config` | `GATEWAY_HOST`, upstreams `*_UPSTREAM`, `GATEWAY_LOG_LEVEL` |
+| `tint-gateway` | Imagen propia (`gateway/Dockerfile`): Caddy 2.9.1 con `caddy-ratelimit` v0.1.0 ([ADR 0027](adr/0027-limites-y-cabeceras-de-seguridad-en-el-gateway.md)); entrada HTTPS y reverse proxy | 80 → 80 · 443 → 443 | `gateway-data:/data` · `gateway-config:/config` | `GATEWAY_HOST`, upstreams `*_UPSTREAM`, `GATEWAY_LOG_LEVEL` |
 | `tint-postgres` | Imagen `postgres:16-alpine` | 5432 → 5432 | `postgres-data:/var/lib/postgresql/data` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` |
 | `tint-redis` | Imagen `redis:7-alpine` (`--appendonly yes`) | 6379 → 6379 | `redis-data:/data` | — |
 | `tint-minio` | Imagen `pgsty/minio` fijada por digest SHA-256 (la oficial no está disponible) | 9000 → 9000 (API) · 9001 → 9001 (consola) | `minio-data:/data` | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_API_CORS_ALLOW_ORIGIN` (de `MINIO_CORS_ALLOW_ORIGIN`) |
@@ -612,6 +612,21 @@ JSON `service_unavailable`, sin conservar un estado de circuito que impida
 atenderlo cuando se recupere. Su política `restart: unless-stopped` permite
 recuperar automáticamente el punto de entrada después de una caída.
 
+Además, el gateway limita y valida la entrada ([ADR 0027](adr/0027-limites-y-cabeceras-de-seguridad-en-el-gateway.md),
+Prototipo 3, escenario 2):
+
+| Medida | Dónde | Respuesta |
+| :--- | :--- | :--- |
+| Límite por usuario: 100 peticiones cada 10 s, clave `X-User-Id` (después de `forward_auth`) | `/api/*` con sesión | `429` JSON `rate_limited` + `Retry-After` |
+| Límite por IP del cliente: 600 peticiones cada 10 s | `/api/v1/invitations/*` | `429` JSON `rate_limited` + `Retry-After` |
+| Tamaño máximo del cuerpo: 1 000 000 bytes (`Content-Length` y `request_body`) | `/api/*` | `413` JSON `payload_too_large` |
+| Rutas internas ocultas con y sin token (no pasan por `forward_auth`) | `/api/v1/internal/*` | `404` |
+| `X-User-*` enviadas por el cliente se borran antes de `forward_auth` | todas | — |
+| Sin `Server`; `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` y CSP mínima | todas | — |
+
+`/healthz` y `/ws/*` no tienen límite de tasa. La autenticación y los límites van dentro de un `route`
+del Caddyfile porque `route` respeta el orden escrito.
+
 ### 8.1 Trazabilidad de solicitudes
 
 El gateway administra el encabezado `X-Correlation-ID`: conserva un valor
@@ -712,6 +727,7 @@ Campos obligatorios: `timestamp` (ISO UTC con ms), `level` (`debug|info|warn|err
 | [0024](adr/0024-login-local-con-firebase-auth-emulator.md) | Login local del host con el Firebase Auth Emulator |
 | [0025](adr/0025-metadatos-del-chat-en-mongodb.md) | Metadatos del chat en MongoDB, sin el texto (SOC-07, DAT-02) (propuesta) |
 | [0026](adr/0026-app-android-nativa-kotlin.md) | App Android nativa en Kotlin |
+| [0027](adr/0027-limites-y-cabeceras-de-seguridad-en-el-gateway.md) | Límites de tasa y de tamaño y cabeceras de seguridad en el gateway (propuesta) |
 
 ## 11. Documentación por servicio
 

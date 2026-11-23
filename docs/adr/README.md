@@ -34,6 +34,7 @@ Cada ADR de esta carpeta se escribió a partir de evidencia del repositorio (có
 | [0024](0024-login-local-con-firebase-auth-emulator.md) | Login local del host con el Firebase Auth Emulator | Aceptada | 2026-11-02 | Infraestructura, identity-api, web |
 | [0025](0025-metadatos-del-chat-en-mongodb.md) | Metadatos del chat en MongoDB, sin el texto (SOC-07, DAT-02) | Propuesta | 2026-11-02 | social-core, Infraestructura |
 | [0026](0026-app-android-nativa-kotlin.md) | App Android nativa en Kotlin | Aceptada | 2026-10-31 | android (nuevo), infra |
+| [0027](0027-limites-y-cabeceras-de-seguridad-en-el-gateway.md) | Límites de tasa y de tamaño y cabeceras de seguridad en el gateway (Prototipo 3, escenario 2) | Propuesta | 2026-11-23 | Infraestructura |
 
 ```mermaid
 flowchart LR
@@ -65,6 +66,7 @@ flowchart LR
     A22 --> A24
     A17 --> A25["0025 metadatos del chat en MongoDB"]
     A12 --> A26["0026 app Android nativa en Kotlin"]
+    A20 --> A27["0027 límites y cabeceras en el gateway"]
 ```
 
 ## Formato
