@@ -563,6 +563,19 @@ Ningún secreto del sistema se versiona en Git ni se hornea en capas de las imá
 
 El requerimiento R10 y la historia OPS-06 (#91) establecen que el despliegue del software debe ser 100 % orientado a contenedores y reproducible por un evaluador en menos de 15 minutos. Las instrucciones concisas de una página, los pasos de verificación y la matriz de solución de problemas (AC1, AC2, AC3) están centralizados en la sección [Instrucciones de Ejecución del Prototipo](../README.md#-instrucciones-de-ejecución-del-prototipo-ops-06) del `README.md` y formalizados en el [ADR 0023](adr/0023-instrucciones-de-ejecucion-del-prototipo.md).
 
+### 7.6 Segmentación de red (Prototipo 3, escenario 3, ADR 0027)
+
+Cada capa tiene su red de Compose y cada servicio entra solo en las que necesita:
+
+| Red | Capa | Miembros |
+| :--- | :--- | :--- |
+| `edge` | Presentación y Acceso | gateway, web, emulador de login local |
+| `app` | Servicios | gateway, web (salto S1), identity-api y los núcleos |
+| `data` | Datos | PostgreSQL, Redis, MongoDB, MinIO y los servicios que los usan; en producción es `internal: true` |
+| `media` | Medios | MinIO y gateway (URLs firmadas) |
+
+`web`, `gateway` y el emulador no pertenecen a `data`; `media-worker` y `audit-log` solo a `data`. coturn usa la red del host. En desarrollo las bases publican en `127.0.0.1`; en producción no publican nada (MinIO conserva 9000 y stream-core su UDP de medios). Las reglas las comprueba `gateway/tests/test_network_segmentation.py`.
+
 ## 8. Puertos locales
 
 | Servicio | Puerto | Notas |
@@ -576,10 +589,10 @@ El requerimiento R10 y la historia OPS-06 (#91) establecen que el despliegue del
 | stream-core | 8086 · UDP `STREAM_UDP_PORT` | `docker compose` (`/api/v1/stream/*` WHIP/WHEP, `/healthz`) |
 | coturn | 3478 · 49160–49200 | `docker compose` (STUN/TURN, red del host) |
 | Firebase Auth Emulator | 9099 (solo `127.0.0.1`) | `docker compose` de desarrollo: login local del host ([ADR 0024](adr/0024-login-local-con-firebase-auth-emulator.md)); no existe en producción |
-| PostgreSQL | 5432 | |
-| Redis | 6379 | |
-| MinIO | 9000 (API) · 9001 (consola) | |
-| MongoDB | 27017 | `docker compose` (metadatos del chat; social-core) |
+| PostgreSQL | 5432 (solo `127.0.0.1`) | no se publica en producción |
+| Redis | 6379 (solo `127.0.0.1`) | no se publica en producción |
+| MinIO | 9000 (API) · 9001 (consola, solo `127.0.0.1`) | en producción solo 9000 |
+| MongoDB | 27017 (solo `127.0.0.1`) | `docker compose` (metadatos del chat; social-core); no se publica en producción |
 
 El servicio `gateway` publica `80/443` como entrada única. Redirige HTTP a
 HTTPS, termina TLS con Caddy y mantiene el contrato público de rutas:
@@ -712,6 +725,7 @@ Campos obligatorios: `timestamp` (ISO UTC con ms), `level` (`debug|info|warn|err
 | [0024](adr/0024-login-local-con-firebase-auth-emulator.md) | Login local del host con el Firebase Auth Emulator |
 | [0025](adr/0025-metadatos-del-chat-en-mongodb.md) | Metadatos del chat en MongoDB, sin el texto (SOC-07, DAT-02) (propuesta) |
 | [0026](adr/0026-app-android-nativa-kotlin.md) | App Android nativa en Kotlin |
+| [0027](adr/0027-segmentacion-de-red-por-capas.md) | Segmentación de red: una red de Compose por capa |
 
 ## 11. Documentación por servicio
 
