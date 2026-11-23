@@ -19,6 +19,11 @@ https://{$GATEWAY_HOST:localhost} {
     }
     log_append correlation_id {http.request.header.X-Correlation-ID}
 
+    # Canal seguro (Escenario 1, patrón Secure Channel, ADR 0029): tras la primera
+    # visita el navegador usa solo HTTPS durante un año, incluidos subdominios. Vive
+    # únicamente en el sitio HTTPS; el redirector HTTP plano no la emite.
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
     handle_errors {
         @upstream_unavailable expression `{http.error.status_code} == 502 || {http.error.status_code} == 503 || {http.error.status_code} == 504`
         header @upstream_unavailable Content-Type application/json
