@@ -61,8 +61,9 @@ services:
         echo "Environment validation passed"
 
   # Entrada pública única: redirige HTTP a HTTPS y enruta APIs y WebSockets.
+  # Caddy 2.9.1 compilado con caddy-ratelimit (ADR 0028); el Caddyfile se monta abajo.
   gateway:
-    image: caddy:2.9-alpine
+    build: ./gateway
     container_name: tint-gateway
     networks:
       - edge
