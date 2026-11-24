@@ -107,11 +107,15 @@ jobs:
           cp .env.example .env
           docker compose config --quiet
           docker compose -f docker-compose.yml -f docker-compose.production.yml config --quiet
+      # El gateway usa directivas de caddy-ratelimit (ADR 0028): se valida con la imagen compilada,
+      # no con caddy:2.9-alpine, que no las reconoce.
+      - name: Build gateway image
+        run: docker build -t tint-gateway:ci gateway
       - name: Validate Caddy configuration
         run: >-
           docker run --rm
           -v "$PWD/gateway/Caddyfile:/etc/caddy/Caddyfile:ro"
-          caddy:2.9-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          tint-gateway:ci caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
