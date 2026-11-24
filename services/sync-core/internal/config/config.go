@@ -17,27 +17,29 @@ const defaultOrigins = "localhost:5173,127.0.0.1:5173"
 
 // Config agrupa la configuración del servicio.
 type Config struct {
-	Addr           string
-	RedisURL       string
-	JWTSecret      string // compartido con identity-api (tokens HS256)
-	JWTIssuer      string
-	JWTAudience    string
-	AllowedOrigins []string      // patrones de host para el handshake WS
-	RoomTTL        time.Duration // periodo de gracia de la sala (REQ-07)
-	HandoffAfter   time.Duration // sin host durante este tiempo, se delega el control
+	Addr              string
+	RedisURL          string
+	JWTSecret         string // compartido con identity-api (tokens HS256)
+	JWTIssuer         string
+	JWTAudience       string
+	JWTLegacyAudience string        // audiencia aceptada durante la transición de ADR 0030; vacía = desactivada
+	AllowedOrigins    []string      // patrones de host para el handshake WS
+	RoomTTL           time.Duration // periodo de gracia de la sala (REQ-07)
+	HandoffAfter      time.Duration // sin host durante este tiempo, se delega el control
 }
 
 // Load lee la configuración usando getenv (inyectable en pruebas).
 func Load(getenv func(string) string) (Config, error) {
 	c := Config{
-		Addr:           or(getenv("SYNC_CORE_ADDR"), ":8080"),
-		RedisURL:       or(getenv("REDIS_URL"), "redis://localhost:6379"),
-		JWTSecret:      getenv("JWT_SECRET"),
-		JWTIssuer:      or(getenv("JWT_ISSUER"), "tint-identity"),
-		JWTAudience:    or(getenv("JWT_AUDIENCE"), "tint:room"),
-		AllowedOrigins: splitList(or(getenv("ALLOWED_ORIGINS"), defaultOrigins)),
-		RoomTTL:        12 * time.Hour,
-		HandoffAfter:   5 * time.Minute,
+		Addr:              or(getenv("SYNC_CORE_ADDR"), ":8080"),
+		RedisURL:          or(getenv("REDIS_URL"), "redis://localhost:6379"),
+		JWTSecret:         getenv("JWT_SECRET"),
+		JWTIssuer:         or(getenv("JWT_ISSUER"), "tint-identity"),
+		JWTAudience:       or(getenv("JWT_AUDIENCE"), "tint:room"),
+		JWTLegacyAudience: strings.TrimSpace(getenv("JWT_LEGACY_AUDIENCE")),
+		AllowedOrigins:    splitList(or(getenv("ALLOWED_ORIGINS"), defaultOrigins)),
+		RoomTTL:           12 * time.Hour,
+		HandoffAfter:      5 * time.Minute,
 	}
 	if c.JWTSecret == "" {
 		return Config{}, ErrMissingSecret
