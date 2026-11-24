@@ -7,20 +7,30 @@ Corre en el portátil (generador de carga) y maneja el servidor por SSH. Solo us
   python3 bench/run.py measure --label antes-develop
   python3 bench/run.py security --label antes-develop
   python3 bench/run.py segmentation --label antes-develop   # escenario 3: alcanzabilidad desde web e identity-api
+  python3 bench/run.py lab6 --label lab6           # Laboratorio 6: curva por VUs y knee de 4 endpoints
   python3 bench/run.py restore                     # baja el banco y devuelve el servidor a como estaba
   python3 bench/summarize.py bench/results/antes-develop [bench/results/despues]
 
 Detalles y método en docs/pruebas-seguridad.md. El servidor del que parte es Windows con Docker Desktop;
 el stack de pruebas corre con el proyecto de Compose `tintbench` (volúmenes propios) y no toca los
 volúmenes del stack público.
+
+En una sola máquina (`--local`, sin SSH) el banco puede fijar cualquier commit: `prepare --commit` lo
+extrae con `git archive` a `bench/results/_src/<image-tag>/`, escribe su `.env` (secreto sintético) y
+construye sus imágenes con esa etiqueta; los demás subcomandos corren `docker compose` desde ahí:
+
+  python3 bench/run.py --local --ip 127.0.0.1 --image-tag e0 --project tintevo --services all prepare --commit 5767874
+  python3 bench/run.py --local --ip 127.0.0.1 --image-tag e0 --project tintevo --services all measure --label e0 --rate 60
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,6 +50,7 @@ PUBLIC_REPO = r"C:\tint\tint-monorepo"
 PUBLIC_OVERRIDE = r"C:\tint\compose.server.yml"
 TASK = "TINT Deploy"
 SSH_NOISE = ("post-quantum", "store now, decrypt later", "may need to be upgraded", "openssh.com/pq")
+K6_IMAGE = "grafana/k6:2.4.0"
 CALIBRATION_RATES = [25, 50, 100, 200, 400, 800, 1200]
 
 
@@ -59,6 +70,18 @@ class Ctx:
         self.ip = args.ip
         self.port = args.https_port
         self.image_tag = safe_arg(getattr(args, "image_tag", ""), "image-tag")
+        self.local = getattr(args, "local", False)
+        self.http_port = getattr(args, "http_port", 8880)
+        self.project = safe_arg(getattr(args, "project", "") or LOCAL_PROJECT, "project")
+        services = getattr(args, "services", "") or LOCAL_SERVICES
+        self.services = "" if services == "all" else services
+        src = getattr(args, "src", "")
+        if src:
+            self.src = Path(src).resolve()
+        elif self.local and self.image_tag:
+            self.src = SOURCES / self.image_tag  # árbol del commit fijado con `prepare --local --commit`
+        else:
+            self.src = ROOT
 
     @property
     def base(self) -> str:
@@ -67,7 +90,10 @@ class Ctx:
 
 
 def ssh(ctx: Ctx, command: str, check: bool = True, timeout: int = 900) -> str:
-    result = subprocess.run(["ssh", "-o", "BatchMode=yes", ctx.host, command], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    # --local: el "servidor" es esta misma máquina (Docker local, sin SSH), desde el árbol del commit medido.
+    argv = ["sh", "-c", command] if ctx.local else ["ssh", "-o", "BatchMode=yes", ctx.host, command]
+    cwd = ctx.src if ctx.local and ctx.src.exists() else ROOT
+    result = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=cwd)
     noise = lambda text: "\n".join(line for line in text.splitlines() if not any(n in line for n in SSH_NOISE))  # noqa: E731
     if check and result.returncode != 0:
         raise RuntimeError(f"ssh falló ({result.returncode}): {command[:80]}\n{noise(result.stderr)[:500]}")
@@ -114,7 +140,30 @@ def compose_file_value(bench_dir: str, extra: str = "") -> str:
     return ";".join(files)
 
 
+SOURCES = RESULTS / "_src"
+LOCAL_PROJECT = "tintlab6"
+# Lo mínimo para la feature medida (web, gateway, identity-api, PostgreSQL, Redis y MinIO): cabe en un portátil.
+LOCAL_SERVICES = "gateway web identity-api postgres redis minio minio-init firebase-auth-emulator"
+LOCAL_OVERRIDE = ".bench/compose.bench.yml"
+
+
+def local_env(example: str, overrides: dict[str, str]) -> str:
+    """.env del banco local: el .env.example del commit medido con las claves de `overrides` reemplazadas."""
+    keep = [line for line in example.splitlines()
+            if not re.match(r"^\s*(" + "|".join(re.escape(k) for k in overrides) + r")=", line)]
+    return "\n".join([*keep, *(f"{k}={v}" for k, v in overrides.items())]) + "\n"
+
+
 def compose(ctx: Ctx, args: str, **kwargs) -> str:
+    if ctx.local:
+        # Proyecto propio con volúmenes propios: `down -v` no toca los datos del stack de desarrollo.
+        if ctx.src == ROOT:  # sin commit fijado: el árbol actual, como en el Laboratorio 6
+            env = f"GATEWAY_HTTPS_PORT={ctx.port} GATEWAY_HTTP_PORT={ctx.http_port} BENCH_IMAGE_TAG={ctx.image_tag or 'latest'} "
+            files = "-f docker-compose.yml -f bench/compose.bench.yml"
+        else:  # el .env del árbol fijado ya trae puertos, etiqueta y secretos
+            env, files = "", f"-f docker-compose.yml -f {LOCAL_OVERRIDE}"
+        services = ctx.services if args.startswith("up") else ""
+        return ssh(ctx, f"{env}docker compose -p {ctx.project} {files} {args} {services}", **kwargs)
     prefix = f"set BENCH_IMAGE_TAG={ctx.image_tag}&& " if ctx.image_tag else ""
     return ssh(ctx, f"{prefix}cd /d {REMOTE_REPO} && docker compose {args}", **kwargs)
 
@@ -151,6 +200,11 @@ def reset(ctx: Ctx) -> None:
 
 
 def remote_jwt_secret(ctx: Ctx) -> str:
+    if ctx.local:
+        for line in (ctx.src / ".env").read_text().splitlines():
+            if line.startswith("JWT_SECRET="):
+                return line.split("=", 1)[1].strip()
+        raise RuntimeError(f"{ctx.src}/.env no tiene JWT_SECRET")
     out = ssh(ctx, f"findstr /B JWT_SECRET= {REMOTE_REPO}\\.env")
     return out.split("=", 1)[1].strip()
 
@@ -158,7 +212,52 @@ def remote_jwt_secret(ctx: Ctx) -> str:
 # --- prepare / restore ---------------------------------------------------------------------------
 
 
+def prepare_local(ctx: Ctx, args: argparse.Namespace) -> None:
+    """Fija un commit en esta máquina: lo extrae, escribe su .env y el override, y construye sus imágenes."""
+    if not ctx.image_tag:
+        raise SystemExit("prepare --local necesita --image-tag (p. ej. --image-tag e0)")
+    commit = subprocess.run(["git", "rev-parse", args.commit or "HEAD"], cwd=ROOT, capture_output=True, text=True,
+                            check=True).stdout.strip()
+    dest = SOURCES / ctx.image_tag
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    archive = subprocess.Popen(["git", "archive", commit], cwd=ROOT, stdout=subprocess.PIPE)
+    subprocess.run(["tar", "-x", "-C", str(dest)], stdin=archive.stdout, check=True)
+    if archive.wait() != 0:
+        raise RuntimeError(f"git archive {commit} falló")
+    compose_text = (dest / "docker-compose.yml").read_text(encoding="utf-8")
+    override = filter_bench_override((BENCH / "compose.bench.yml").read_text(encoding="utf-8"), compose_services(compose_text))
+    (dest / ".bench").mkdir()
+    (dest / LOCAL_OVERRIDE).write_text(override, encoding="utf-8")
+    (dest / ".bench" / "commit").write_text(commit + "\n")
+    overrides = {
+        "JWT_SECRET": secrets.token_hex(24),
+        "FIREBASE_PROJECT_ID": "demo-tint",
+        "FIREBASE_AUTH_EMULATOR_HOST": "firebase-auth-emulator:9099",
+        "GATEWAY_HTTPS_PORT": str(ctx.port),
+        "GATEWAY_HTTP_PORT": str(ctx.http_port),
+        "BENCH_IMAGE_TAG": ctx.image_tag,
+        "COMPOSE_PROJECT_NAME": ctx.project,
+        "COMPOSE_FILE": f"docker-compose.yml:{LOCAL_OVERRIDE}",
+    }
+    for item in args.env:
+        key, _, value = item.partition("=")
+        overrides[key] = value
+    (dest / ".env").write_text(local_env((dest / ".env.example").read_text(encoding="utf-8"), overrides), encoding="utf-8")
+    if not args.no_build:
+        print(f"construyendo las imágenes de {commit[:7]} con la etiqueta {ctx.image_tag} …", flush=True)
+        log = dest / ".bench" / "build.log"
+        result = subprocess.run(f"docker compose -p {ctx.project} build > {log} 2>&1", shell=True, cwd=dest)
+        if result.returncode != 0:
+            raise RuntimeError(f"docker compose build falló (ver {log})")
+    print(f"listo: {commit[:7]} en {dest}")
+
+
 def cmd_prepare(ctx: Ctx, args: argparse.Namespace) -> None:
+    if ctx.local:
+        prepare_local(ctx, args)
+        return
     RESULTS.mkdir(parents=True, exist_ok=True)
     state = RESULTS / "_estado_servidor.json"
     if not state.exists():  # no sobrescribe el estado original si se repite prepare
@@ -200,11 +299,18 @@ def cmd_restore(ctx: Ctx, _args: argparse.Namespace) -> None:
 
 
 def k6(ctx: Ctx, script: str, out: Path, env: dict[str, str]) -> int:
-    cmd = ["k6", "run", "--insecure-skip-tls-verify", "--summary-trend-stats=min,med,p(90),p(95),p(99),max",
-           "--summary-export", str(out)]
+    run = ["run", "--insecure-skip-tls-verify", "--summary-trend-stats=avg,min,med,p(90),p(95),p(99),max"]
+    if shutil.which("k6"):
+        cmd, out_arg, script_arg = ["k6", *run], str(out), str(ROOT / script)
+    else:
+        # Sin k6 instalado: la imagen oficial con red del host y el repo montado (las rutas deben quedar bajo ROOT).
+        cmd = ["docker", "run", "--rm", "--network", "host", "-u", f"{os.getuid()}:{os.getgid()}",
+               "-v", f"{ROOT}:/work", "-w", "/work", K6_IMAGE, *run]
+        out_arg, script_arg = f"/work/{out.resolve().relative_to(ROOT)}", script
+    cmd += ["--summary-export", out_arg]
     for key, value in env.items():
         cmd += ["-e", f"{key}={value}"]
-    result = subprocess.run([*cmd, str(ROOT / script)], capture_output=True, text=True, cwd=ROOT)
+    result = subprocess.run([*cmd, script_arg], capture_output=True, text=True, cwd=ROOT)
     out.with_suffix(".log").write_text(result.stdout + result.stderr)
     return result.returncode
 
@@ -218,8 +324,9 @@ class Sampler:
     def __enter__(self):
         self.file = self.path.open("w")
         fmt = '"{{.Name}},{{.CPUPerc}},{{.MemUsage}}"'
-        self.proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", self.ctx.host, f"docker stats --format {fmt}"],
-                                     stdout=self.file, stderr=subprocess.DEVNULL)
+        remote = f"docker stats --format {fmt}"
+        argv = ["sh", "-c", remote] if self.ctx.local else ["ssh", "-o", "BatchMode=yes", self.ctx.host, remote]
+        self.proc = subprocess.Popen(argv, stdout=self.file, stderr=subprocess.DEVNULL)
         time.sleep(3)
         return self
 
@@ -260,11 +367,19 @@ def calibrate(ctx: Ctx, label_dir: Path, hosts: int) -> int:
 
 
 def capture_env(ctx: Ctx, rate: int) -> dict:
+    if ctx.local:
+        marker = ctx.src / ".bench" / "commit"
+        commit = marker.read_text().strip() if marker.exists() else subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    else:
+        commit = ssh(ctx, f"git -C {REMOTE_REPO} rev-parse HEAD")
+    k6_version = (subprocess.run(["k6", "version"], capture_output=True, text=True).stdout.strip()
+                  if shutil.which("k6") else K6_IMAGE)
     return {
         "fecha": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "commit_servidor": ssh(ctx, f"git -C {REMOTE_REPO} rev-parse HEAD"),
+        "commit_servidor": commit,
         "docker": ssh(ctx, 'docker version --format "{{.Server.Version}}"'),
-        "k6": subprocess.run(["k6", "version"], capture_output=True, text=True).stdout.strip(),
+        "k6": k6_version,
         "ruta_portatil": subprocess.run(["ip", "route", "get", ctx.ip], capture_output=True, text=True).stdout.splitlines()[0],
         "tasa_api_req_s": rate,
         "nota": "k6 usa --insecure-skip-tls-verify y resuelve localhost a la IP del servidor (certificado interno de Caddy)",
@@ -321,6 +436,68 @@ def cmd_measure(ctx: Ctx, args: argparse.Namespace) -> None:
         print(f"   k6 exit codes (0 = umbrales cumplidos): {codes}")
 
     print("\n" + summarize.markdown(summarize.load_label(label_dir)))
+
+
+class LocalCpu:
+    """CPU del portátil (generador) desde /proc/stat mientras dura el bloque `with`: descarta escalones limitados por k6."""
+
+    def __init__(self, path: Path, every: float = 2.0):
+        self.path, self.every, self.samples = path, every, []
+
+    @staticmethod
+    def _read() -> tuple[int, int]:
+        fields = [int(v) for v in Path("/proc/stat").read_text().splitlines()[0].split()[1:]]
+        return fields[3] + fields[4], sum(fields)  # idle + iowait, total
+
+    def _loop(self) -> None:
+        idle, total = self._read()
+        while not self.stop.wait(self.every):
+            idle2, total2 = self._read()
+            busy = 100.0 * (1 - (idle2 - idle) / max(1, total2 - total))
+            self.samples.append((round(time.time(), 1), round(busy, 1)))
+            idle, total = idle2, total2
+
+    def __enter__(self):
+        import threading
+
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop.set()
+        self.thread.join(timeout=5)
+        self.path.write_text("epoch,cpu_pct\n" + "".join(f"{t},{c}\n" for t, c in self.samples))
+
+
+LAB6_TARGETS = ["gateway", "playback", "sync-ticket", "claim"]
+
+
+def cmd_lab6(ctx: Ctx, args: argparse.Namespace) -> None:
+    """Laboratorio 6: para cada endpoint, una corrida por VUs (stages) con el stack recreado, docker stats y CPU local."""
+    label_dir = RESULTS / args.label
+    label_dir.mkdir(parents=True, exist_ok=True)
+    if args.smoke:
+        args.runs, args.levels, args.hold = 1, "1,5", 10
+    targets = args.targets.split(",")
+    for n in range(1, args.runs + 1):
+        run_dir = label_dir / f"run-{n}"
+        run_dir.mkdir(exist_ok=True)
+        for target in targets:
+            print(f"== corrida {n}/{args.runs}: {target}", flush=True)
+            if not args.no_reset:
+                reset(ctx)
+            env = {"BASE_URL": ctx.base, "SERVER_IP": ctx.ip, "TARGET": target, "LEVELS": args.levels,
+                   "HOLD": str(args.hold), "HOSTS": str(args.hosts), "ROOMS": str(args.rooms_for_list if target == "rooms" else args.rooms)}
+            with LocalCpu(run_dir / f"cpu-portatil-{target}.csv"):
+                if args.no_stats:
+                    code = k6(ctx, "bench/k6/lab6.js", run_dir / f"lab6-{target}.json", env)
+                else:
+                    with Sampler(ctx, run_dir / f"stats-lab6-{target}.csv"):
+                        code = k6(ctx, "bench/k6/lab6.js", run_dir / f"lab6-{target}.json", env)
+            print(f"   k6 exit {code}", flush=True)
+    print("\n" + summarize.lab6_report(label_dir, hold_s=args.hold))
 
 
 def cmd_security(ctx: Ctx, args: argparse.Namespace) -> None:
@@ -396,10 +573,18 @@ def main() -> int:
     parser.add_argument("--ip", default="192.168.1.7")
     parser.add_argument("--https-port", type=int, default=8443)
     parser.add_argument("--image-tag", default="", help="BENCH_IMAGE_TAG para el 'después' (por defecto: latest)")
+    parser.add_argument("--local", action="store_true",
+                        help="stack y carga en esta máquina (Docker local, sin SSH); usar --ip 127.0.0.1")
+    parser.add_argument("--http-port", type=int, default=8880, help="--local: GATEWAY_HTTP_PORT")
+    parser.add_argument("--project", default="", help=f"--local: proyecto de Compose (por defecto {LOCAL_PROJECT})")
+    parser.add_argument("--services", default="", help="--local: servicios a levantar ('all' = todo el Compose)")
+    parser.add_argument("--src", default="", help="--local: árbol desde el que se corre Compose (por defecto bench/results/_src/<image-tag>)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     prepare = sub.add_parser("prepare")
     prepare.add_argument("--commit", default="", help="commit a medir (por defecto el del clon público)")
+    prepare.add_argument("--env", action="append", default=[], help="--local: KEY=VALOR extra para el .env (repetible)")
+    prepare.add_argument("--no-build", action="store_true", help="--local: no construye las imágenes")
     prepare.add_argument("--extra-compose", default="", help="override de bench/ que se suma al COMPOSE_FILE (p. ej. compose.segmentation.yml)")
     sub.add_parser("restore")
 
@@ -417,6 +602,19 @@ def main() -> int:
     measure.add_argument("--sync-duration", default="60s")
     measure.add_argument("--smoke", action="store_true", help="corrida corta de verificación del banco")
 
+    lab6 = sub.add_parser("lab6", help="Laboratorio 6: curva de rendimiento y knee por VUs")
+    lab6.add_argument("--label", required=True)
+    lab6.add_argument("--targets", default=",".join(LAB6_TARGETS), help="gateway,playback,sync-ticket,claim,rooms,ssr")
+    lab6.add_argument("--runs", type=int, default=3)
+    lab6.add_argument("--levels", default="1,50,200,500,1000,2000")
+    lab6.add_argument("--hold", type=int, default=30, help="segundos de meseta por nivel")
+    lab6.add_argument("--hosts", type=int, default=1, help="1 = todos los VUs comparten la fila del host")
+    lab6.add_argument("--rooms", type=int, default=3)
+    lab6.add_argument("--rooms-for-list", type=int, default=300, help="salas sembradas para TARGET=rooms")
+    lab6.add_argument("--no-reset", action="store_true", help="no recrea el stack (p. ej. stack local sin SSH)")
+    lab6.add_argument("--no-stats", action="store_true", help="sin docker stats por SSH")
+    lab6.add_argument("--smoke", action="store_true", help="niveles 1 y 5 con mesetas de 10 s")
+
     security = sub.add_parser("security")
     security.add_argument("--label", required=True)
 
@@ -429,7 +627,7 @@ def main() -> int:
     args = parser.parse_args()
     ctx = Ctx(args)
     {"prepare": cmd_prepare, "restore": cmd_restore, "measure": cmd_measure, "security": cmd_security,
-     "segmentation": cmd_segmentation, "build": cmd_build, "up": cmd_up}[args.command](ctx, args)
+     "segmentation": cmd_segmentation, "build": cmd_build, "up": cmd_up, "lab6": cmd_lab6}[args.command](ctx, args)
     return 0
 
 
