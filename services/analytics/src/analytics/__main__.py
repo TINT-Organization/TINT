@@ -87,6 +87,7 @@ def main(
         secret=settings.jwt_secret,
         issuer=settings.jwt_issuer,
         audience=settings.jwt_audience,
+        legacy_audience=settings.jwt_legacy_audience,
         allowed_origins=settings.allowed_origins,
         admin_password=settings.admin_password,
     )
