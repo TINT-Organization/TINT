@@ -483,7 +483,7 @@ flowchart TB
 | Nodo | Artefacto | Puertos (host → contenedor) | Volúmenes | Variables principales |
 | :--- | :--- | :--- | :--- | :--- |
 | `tint-env-check` | Imagen `alpine:3.20`, tarea de validación que termina | — | — | Secretos y niveles de log requeridos |
-| `tint-gateway` | Imagen propia (`gateway/Dockerfile`): Caddy 2.9.1 con `caddy-ratelimit` v0.1.0 ([ADR 0027](adr/0027-limites-y-cabeceras-de-seguridad-en-el-gateway.md)); entrada HTTPS y reverse proxy | 80 → 80 · 443 → 443 | `gateway-data:/data` · `gateway-config:/config` | `GATEWAY_HOST`, upstreams `*_UPSTREAM`, `GATEWAY_LOG_LEVEL` |
+| `tint-gateway` | Imagen propia (`gateway/Dockerfile`): Caddy 2.9.1 con `caddy-ratelimit` v0.1.0 ([ADR 0028](adr/0028-limites-y-cabeceras-de-seguridad-en-el-gateway.md)); entrada HTTPS y reverse proxy | 80 → 80 · 443 → 443 | `gateway-data:/data` · `gateway-config:/config` | `GATEWAY_HOST`, upstreams `*_UPSTREAM`, `GATEWAY_LOG_LEVEL` |
 | `tint-postgres` | Imagen `postgres:16-alpine` | 5432 → 5432 | `postgres-data:/var/lib/postgresql/data` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` |
 | `tint-redis` | Imagen `redis:7-alpine` (`--appendonly yes`) | 6379 → 6379 | `redis-data:/data` | — |
 | `tint-minio` | Imagen `pgsty/minio` fijada por digest SHA-256 (la oficial no está disponible) | 9000 → 9000 (API) · 9001 → 9001 (consola) | `minio-data:/data` | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_API_CORS_ALLOW_ORIGIN` (de `MINIO_CORS_ALLOW_ORIGIN`) |
@@ -625,7 +625,7 @@ JSON `service_unavailable`, sin conservar un estado de circuito que impida
 atenderlo cuando se recupere. Su política `restart: unless-stopped` permite
 recuperar automáticamente el punto de entrada después de una caída.
 
-Además, el gateway limita y valida la entrada ([ADR 0027](adr/0027-limites-y-cabeceras-de-seguridad-en-el-gateway.md),
+Además, el gateway limita y valida la entrada ([ADR 0028](adr/0028-limites-y-cabeceras-de-seguridad-en-el-gateway.md),
 Prototipo 3, escenario 2):
 
 | Medida | Dónde | Respuesta |
@@ -740,11 +740,8 @@ Campos obligatorios: `timestamp` (ISO UTC con ms), `level` (`debug|info|warn|err
 | [0024](adr/0024-login-local-con-firebase-auth-emulator.md) | Login local del host con el Firebase Auth Emulator |
 | [0025](adr/0025-metadatos-del-chat-en-mongodb.md) | Metadatos del chat en MongoDB, sin el texto (SOC-07, DAT-02) (propuesta) |
 | [0026](adr/0026-app-android-nativa-kotlin.md) | App Android nativa en Kotlin |
-<<<<<<< HEAD
-| [0027](adr/0027-limites-y-cabeceras-de-seguridad-en-el-gateway.md) | Límites de tasa y de tamaño y cabeceras de seguridad en el gateway (propuesta) |
-=======
 | [0027](adr/0027-segmentacion-de-red-por-capas.md) | Segmentación de red: una red de Compose por capa |
->>>>>>> origin/develop
+| [0028](adr/0028-limites-y-cabeceras-de-seguridad-en-el-gateway.md) | Límites de tasa y de tamaño y cabeceras de seguridad en el gateway (propuesta) |
 
 ## 11. Documentación por servicio
 

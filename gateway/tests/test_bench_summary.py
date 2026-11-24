@@ -322,7 +322,7 @@ class BenchComposeOverrideTests(unittest.TestCase):
 class BenchLoadScriptTests(unittest.TestCase):
     def test_burst_phase_comes_from_a_single_client(self):
         # Escenario 2: el estímulo es "un cliente" que manda una ráfaga. Con un token al azar entre 20,
-        # cada uno haría ~15 req/s y el límite por usuario no se vería (ADR 0027).
+        # cada uno haría ~15 req/s y el límite por usuario no se vería (ADR 0028).
         script = (ROOT / "bench" / "k6" / "api.js").read_text(encoding="utf-8")
 
         self.assertIn("PHASE === 'burst' ? data.seeded[0]", script)

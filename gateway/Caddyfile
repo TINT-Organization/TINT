@@ -19,8 +19,7 @@ https://{$GATEWAY_HOST:localhost} {
     }
     log_append correlation_id {http.request.header.X-Correlation-ID}
 
-<<<<<<< HEAD
-    # Escenario 2 (ADR 0027): no anunciar el servidor y cabeceras de seguridad para el navegador.
+    # Escenario 2 (ADR 0028): no anunciar el servidor y cabeceras de seguridad para el navegador.
     # La CSP es mínima a propósito: no limita scripts ni conexiones (Firebase, MinIO, WebRTC).
     # HSTS es del escenario 1 (Secure Channel).
     header {
@@ -30,12 +29,7 @@ https://{$GATEWAY_HOST:localhost} {
         Referrer-Policy strict-origin-when-cross-origin
         Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
     }
-=======
-    # Canal seguro (Escenario 1, patrón Secure Channel, ADR 0029): tras la primera
-    # visita el navegador usa solo HTTPS durante un año, incluidos subdominios. Vive
-    # únicamente en el sitio HTTPS; el redirector HTTP plano no la emite.
     header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
->>>>>>> origin/develop
 
     handle_errors {
         @upstream_unavailable expression `{http.error.status_code} == 502 || {http.error.status_code} == 503 || {http.error.status_code} == 504`
@@ -56,14 +50,14 @@ https://{$GATEWAY_HOST:localhost} {
 
     # El preflight CORS (OPTIONS) no lleva Authorization: cada servicio lo responde.
     # Las rutas internas no pasan por forward_auth: si pasaran, sin token darían 401 en vez de 404
-    # (forward_auth corre antes que respond, sin importar el orden del texto; ADR 0027).
+    # (forward_auth corre antes que respond, sin importar el orden del texto; ADR 0028).
     @protected {
         path /api/* /ws/*
         not path /api/v1/healthz /api/v1/invitations/claim /api/v1/invitations/* /api/v1/internal/*
         not method OPTIONS
     }
 
-    # Límite de cuerpo (ADR 0027): 413 temprano por Content-Length (>= 1 000 000 bytes) sin leer el
+    # Límite de cuerpo (ADR 0028): 413 temprano por Content-Length (>= 1 000 000 bytes) sin leer el
     # cuerpo; request_body corta además los cuerpos chunked. Las subidas de vídeo no pasan por aquí
     # (van directo a MinIO con URL firmada, ADR 0008).
     @body_too_large {
@@ -78,7 +72,7 @@ https://{$GATEWAY_HOST:localhost} {
         max_size 1MB
     }
 
-    # Autenticación y límites de tasa (ADR 0027). Van en un route porque route respeta el orden escrito:
+    # Autenticación y límites de tasa (ADR 0028). Van en un route porque route respeta el orden escrito:
     # rate_limit se ordena por defecto antes de forward_auth, y el límite por usuario debe ir después.
     route {
         # copy_headers solo escribe lo que devuelve identity-api: lo que mande el cliente se borra antes.

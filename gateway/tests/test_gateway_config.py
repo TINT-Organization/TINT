@@ -71,7 +71,7 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn("respond @internal_api 404", caddyfile)
 
     def test_internal_routes_skip_forward_auth_so_they_answer_404_without_token(self):
-        # ADR 0027: en Caddy el orden lo fija la directiva, no el texto. forward_auth corre antes que
+        # ADR 0028: en Caddy el orden lo fija la directiva, no el texto. forward_auth corre antes que
         # respond, así que sin token la ruta interna daba 401 (línea base, P10). Se saca de @protected.
         caddyfile = CONFIG.read_text(encoding="utf-8")
         protected = caddyfile.split("@protected {", 1)[1].split("}", 1)[0]
@@ -146,7 +146,7 @@ class GatewayConfigTests(unittest.TestCase):
 
 
 class GatewayReverseProxyHardeningTests(unittest.TestCase):
-    """Prototipo 3, escenario 2 (ADR 0027): límites de tasa y tamaño, cabeceras y orden de la entrada."""
+    """Prototipo 3, escenario 2 (ADR 0028): límites de tasa y tamaño, cabeceras y orden de la entrada."""
 
     def setUp(self):
         self.caddyfile = CONFIG.read_text(encoding="utf-8")
@@ -219,13 +219,13 @@ class GatewayReverseProxyHardeningTests(unittest.TestCase):
             self.caddyfile,
         )
 
-    def test_hsts_is_left_to_scenario_1(self):
-        # HSTS es de Secure Channel (escenario 1); este cambio no lo agrega para no pisarlo.
-        self.assertNotIn("Strict-Transport-Security", self.caddyfile)
+    def test_hsts_is_preserved_from_scenario_1(self):
+        # HSTS es de Secure Channel (escenario 1) y se conserva junto con las medidas del escenario 2.
+        self.assertIn("Strict-Transport-Security", self.caddyfile)
 
 
 class GatewayImageTests(unittest.TestCase):
-    """ADR 0027: el gateway se compila con caddy-ratelimit; versiones fijas."""
+    """ADR 0028: el gateway se compila con caddy-ratelimit; versiones fijas."""
 
     DOCKERFILE = Path(__file__).parents[1] / "Dockerfile"
 

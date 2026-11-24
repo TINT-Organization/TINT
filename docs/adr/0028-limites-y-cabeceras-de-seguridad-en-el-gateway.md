@@ -1,4 +1,4 @@
-# ADR 0027 — Límites de tasa y de tamaño y cabeceras de seguridad en el gateway (Prototipo 3, escenario 2)
+# ADR 0028 — Límites de tasa y de tamaño y cabeceras de seguridad en el gateway (Prototipo 3, escenario 2)
 
 | Campo | Valor |
 | :--- | :--- |

@@ -96,7 +96,7 @@ function claim(s) {
 
 export default function (data) {
   // La ráfaga es un solo cliente (un token), como el estímulo del escenario 2: si se repartiera entre
-  // los HOSTS tokens, el límite por usuario del gateway no se vería (ADR 0027).
+  // los HOSTS tokens, el límite por usuario del gateway no se vería (ADR 0028).
   const s = PHASE === 'burst' ? data.seeded[0] : data.seeded[Math.floor(Math.random() * data.seeded.length)];
   const res = PHASE === 'burst' ? listRooms(s) : pick()(s);
   count(res);

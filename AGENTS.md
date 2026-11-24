@@ -15,7 +15,7 @@ Este repositorio es un monorepo multi-lenguaje (Go, TypeScript, Python y C++). *
 | Bitácora de auditoría | `services/audit-log` | Python 3.11, Redis Streams, PostgreSQL (solo INSERT + cadena de hashes), sin API pública | [services/audit-log/AGENTS.md](services/audit-log/AGENTS.md) |
 | Voz | `services/voice-core` | C++23, Boost.Beast, hiredis, WebRTC P2P (solo señalización) | [services/voice-core/AGENTS.md](services/voice-core/AGENTS.md) |
 | Transmisión en vivo | `services/stream-core` | C++23, libdatachannel v0.24.6 (SFU, WHIP/WHEP), Boost.Beast, hiredis | [services/stream-core/AGENTS.md](services/stream-core/AGENTS.md) |
-| Infra / CI | raíz, `.github/`, `scripts/`, `gateway/` | Docker Compose, GitHub Actions, Caddy 2.9.1 compilado con `caddy-ratelimit` v0.1.0 (límite de tasa del gateway, [ADR 0027](docs/adr/0027-limites-y-cabeceras-de-seguridad-en-el-gateway.md)) | este archivo |
+| Infra / CI | raíz, `.github/`, `scripts/`, `gateway/` | Docker Compose, GitHub Actions, Caddy 2.9.1 compilado con `caddy-ratelimit` v0.1.0 (límite de tasa del gateway, [ADR 0028](docs/adr/0028-limites-y-cabeceras-de-seguridad-en-el-gateway.md)) | este archivo |
 
 ## Documentación
 La documentación de features vive en [`docs/`](docs/README.md), con diagramas Mermaid:
