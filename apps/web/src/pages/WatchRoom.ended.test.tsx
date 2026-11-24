@@ -48,7 +48,7 @@ const ENDED = /el evento terminó/i;
 let playbackError: unknown = null;
 
 function routeApi(path: string) {
-  if (path.endsWith('/sync-ticket')) return Promise.resolve({ token: 'ticket', expiresAt: '2099-01-01T00:00:00Z' });
+  if (/\/tickets\/(sync|social|voice|stream)$/.test(path)) return Promise.resolve({ token: 'ticket', expiresAt: '2099-01-01T00:00:00Z' });
   if (path.endsWith('/playback')) {
     if (playbackError) return Promise.reject(playbackError);
     return Promise.resolve({ mediaId: 'm1', url: 'https://minio/m1?sig=1', expiresAt: '2099-01-01T00:00:00Z' });

@@ -62,7 +62,7 @@ function fakeLive(extra: Partial<LiveStream> = {}): LiveStream {
 }
 
 function routeApi(path: string, init?: RequestInit) {
-  if (path.endsWith('/sync-ticket')) return Promise.resolve({ token: 'ticket' });
+  if (/\/tickets\/(sync|social|voice|stream)$/.test(path)) return Promise.resolve({ token: 'ticket' });
   if (path === '/rooms/r1') return Promise.resolve({ room: { id: 'r1', title: 'Final', kind: 'live', status: 'active', ...room } });
   if (path === '/rooms/r1/invitations') return Promise.resolve({ invitations: [] });
   if (path === '/rooms/r1/end' && init?.method === 'POST') return Promise.resolve({ room_id: 'r1', status: 'disabled' });
@@ -178,11 +178,12 @@ describe('LiveRoom — audiencia', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Fuiste retirado de la sala por el host');
   });
 
-  it('4003 del chat: la invitación expiró', async () => {
+  it('ticket social rechazado con 401 (sesión del invitado caducada): la invitación expiró', async () => {
+    mockedApi.mockImplementation(((path: string, init?: RequestInit) =>
+      path.endsWith('/tickets/social')
+        ? Promise.reject(new ApiError(401, 'Invalid token', { error: 'Invalid token' }))
+        : routeApi(path, init)) as typeof apiFetch);
     renderLive();
-    await flush();
-    act(() => social().open());
-    act(() => social().close(4003));
     await flush();
     expect(screen.getByRole('alert')).toHaveTextContent(/expiró/);
   });
