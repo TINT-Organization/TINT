@@ -25,6 +25,19 @@ class ServiceAudienceTransitionTests(unittest.TestCase):
                 env = self.services[name]["environment"]
                 self.assertEqual(env["JWT_LEGACY_AUDIENCE"], "${JWT_LEGACY_AUDIENCE:-tint:room}")
 
+    def test_every_verifier_has_its_own_audience(self):
+        expected = {
+            "identity-api": "tint:api",
+            "sync-core": "tint:sync",
+            "social-core": "tint:social",
+            "voice-core": "tint:voice",
+            "stream-core": "tint:stream",
+            "analytics": "tint:analytics",
+        }
+        for name, audience in expected.items():
+            with self.subTest(service=name):
+                self.assertEqual(self.services[name]["environment"]["JWT_AUDIENCE"], audience)
+
     def test_identity_api_receives_the_service_ticket_ttl(self):
         env = self.services["identity-api"]["environment"]
         self.assertEqual(env["SERVICE_TICKET_TTL_SECONDS"], "${SERVICE_TICKET_TTL_SECONDS:-600}")

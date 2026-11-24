@@ -273,7 +273,8 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
-      JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      # ADR 0030: audiencia propia; rechaza tickets emitidos para otro servicio.
+      JWT_AUDIENCE: tint:analytics
       # ADR 0030 (transición): audiencia legada aceptada hasta que web y Android pidan tickets por
       # servicio. La vacía el PR que cierra la transición.
       JWT_LEGACY_AUDIENCE: ${JWT_LEGACY_AUDIENCE:-tint:room}
@@ -340,7 +341,8 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
-      JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      # ADR 0030: audiencia propia; rechaza tickets emitidos para otro servicio.
+      JWT_AUDIENCE: tint:social
       # ADR 0030 (transición): audiencia legada aceptada hasta que web y Android pidan tickets por
       # servicio. La vacía el PR que cierra la transición.
       JWT_LEGACY_AUDIENCE: ${JWT_LEGACY_AUDIENCE:-tint:room}
@@ -386,7 +388,8 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
-      JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      # ADR 0030: audiencia propia; rechaza tickets emitidos para otro servicio.
+      JWT_AUDIENCE: tint:sync
       # ADR 0030 (transición): audiencia legada aceptada hasta que web y Android pidan tickets por
       # servicio. La vacía el PR que cierra la transición.
       JWT_LEGACY_AUDIENCE: ${JWT_LEGACY_AUDIENCE:-tint:room}
@@ -432,7 +435,8 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
-      JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      # ADR 0030: audiencia propia; rechaza tickets emitidos para otro servicio.
+      JWT_AUDIENCE: tint:api
       # ADR 0030 (transición): audiencia legada aceptada hasta que web y Android pidan tickets por
       # servicio. La vacía el PR que cierra la transición.
       JWT_LEGACY_AUDIENCE: ${JWT_LEGACY_AUDIENCE:-tint:room}
@@ -473,7 +477,8 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
-      JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      # ADR 0030: audiencia propia; rechaza tickets emitidos para otro servicio.
+      JWT_AUDIENCE: tint:voice
       # ADR 0030 (transición): audiencia legada aceptada hasta que web y Android pidan tickets por
       # servicio. La vacía el PR que cierra la transición.
       JWT_LEGACY_AUDIENCE: ${JWT_LEGACY_AUDIENCE:-tint:room}
@@ -578,7 +583,8 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
-      JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      # ADR 0030: audiencia propia; rechaza tickets emitidos para otro servicio.
+      JWT_AUDIENCE: tint:stream
       # ADR 0030 (transición): audiencia legada aceptada hasta que web y Android pidan tickets por
       # servicio. La vacía el PR que cierra la transición.
       JWT_LEGACY_AUDIENCE: ${JWT_LEGACY_AUDIENCE:-tint:room}
