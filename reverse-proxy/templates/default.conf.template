@@ -1,0 +1,136 @@
+# Sitio del borde de TINT (ADR 0031). La imagen oficial de nginx sustituye las variables
+# ${...} definidas en el entorno (GATEWAY_HOST, GATEWAY_HTTPS_PORT, EDGE_RATE_PER_IP,
+# EDGE_BURST_PER_IP) y deja intactas las variables propias de nginx ($host, $uri, …).
+
+# Límite grueso por IP (escenario 2): frena una avalancha antes de llegar al login. El límite
+# fino es por usuario verificado y lo aplica Caddy tras forward_auth (ADR 0028).
+limit_req_zone $binary_remote_addr zone=per_ip:10m rate=${EDGE_RATE_PER_IP}r/s;
+limit_req_zone $binary_remote_addr zone=media_per_ip:10m rate=200r/s;
+
+upstream gateway_upstream {
+    server gateway:8080 max_fails=3 fail_timeout=10s;
+    keepalive 64;
+}
+
+upstream minio_upstream {
+    server minio:9000 max_fails=3 fail_timeout=10s;
+    keepalive 16;
+}
+
+# HTTP plano: solo redirige (308 conserva método y cuerpo) y responde la salud del contenedor.
+# Aquí no va HSTS: los navegadores lo ignoran por HTTP (RFC 6797 §7.2).
+server {
+    listen 80 default_server;
+    server_name _;
+
+    location = /healthz {
+        default_type application/json;
+        return 200 '{"status":"ok","service":"reverse-proxy"}';
+    }
+
+    location / {
+        return 308 https://$host:${GATEWAY_HTTPS_PORT}$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl default_server;
+    http2 on;
+    server_name ${GATEWAY_HOST} _;
+
+    # Escenario 1 (Secure Channel): solo TLS 1.2 y 1.3.
+    ssl_certificate     /etc/nginx/certs/tls.crt;
+    ssl_certificate_key /etc/nginx/certs/tls.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:TLS:10m;
+    ssl_session_timeout 1h;
+
+    # Escenario 1: HSTS (ADR 0029, ahora en el borde). Escenario 2: cabeceras de seguridad (ADR 0028).
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'self'" always;
+
+    # Escenario 2: cuerpo máximo de 1 MB (los vídeos van por /tint-media/, sin este límite).
+    client_max_body_size 1m;
+
+    limit_req zone=per_ip burst=${EDGE_BURST_PER_IP} nodelay;
+
+    error_page 429 = @rate_limited;
+    error_page 413 = @payload_too_large;
+    error_page 502 503 504 = @unavailable;
+
+    # Resiliencia: tiempos acotados y reintento solo ante fallos de conexión de peticiones
+    # idempotentes (nginx no reintenta POST salvo non_idempotent, que no se usa).
+    proxy_http_version 1.1;
+    proxy_connect_timeout 5s;
+    proxy_send_timeout 30s;
+    proxy_read_timeout 30s;
+    proxy_next_upstream error timeout http_502 http_503;
+    proxy_next_upstream_tries 2;
+    proxy_next_upstream_timeout 10s;
+
+
+    location = /healthz {
+        default_type application/json;
+        return 200 '{"status":"ok","service":"reverse-proxy"}';
+    }
+
+    # Canales en tiempo real (Sync, Social, Voz): upgrade y lectura larga.
+    location /ws/ {
+        include /etc/nginx/snippets/proxy-headers.conf;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+        proxy_pass http://gateway_upstream;
+    }
+
+    # Escenario 1: vídeos y subidas por TLS. MinIO verifica la firma SigV4 contra el Host
+    # original, así que se conserva; identity-api firma con MINIO_PUBLIC_ENDPOINT=https://<host>.
+    location /tint-media/ {
+        limit_req zone=media_per_ip burst=400 nodelay;
+        client_max_body_size 0;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        include /etc/nginx/snippets/proxy-headers.conf;
+        proxy_set_header Connection "";
+        # MinIO trae sus propias cabeceras de seguridad: se quitan para no duplicar las del borde.
+        proxy_hide_header Strict-Transport-Security;
+        proxy_hide_header X-Content-Type-Options;
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header X-XSS-Protection;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_pass http://minio_upstream;
+    }
+
+    location / {
+        include /etc/nginx/snippets/proxy-headers.conf;
+        proxy_set_header Connection "";
+        proxy_pass http://gateway_upstream;
+    }
+
+    location @rate_limited {
+        default_type application/json;
+        add_header Retry-After 1 always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        return 429 '{"error":"rate_limited","message":"Too many requests. Try again later."}';
+    }
+
+    location @payload_too_large {
+        default_type application/json;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        return 413 '{"error":"payload_too_large","message":"The request body is too large."}';
+    }
+
+    location @unavailable {
+        default_type application/json;
+        add_header Retry-After 5 always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        return 503 '{"error":"service_unavailable","message":"The requested service is temporarily unavailable."}';
+    }
+}

@@ -60,25 +60,75 @@ services:
         esac
         echo "Environment validation passed"
 
-  # Entrada pública única: redirige HTTP a HTTPS y enruta APIs y WebSockets.
-  gateway:
-    image: caddy:2.9-alpine
-    container_name: tint-gateway
+  # Entrada pública única (ADR 0031): nginx publica 80/443, termina TLS (escenario 1), pone HSTS y
+  # las cabeceras de seguridad, limita por IP y tamaño (escenario 2) y sirve /tint-media/* desde
+  # MinIO por TLS. Todo lo demás lo pasa a Caddy (gateway) por HTTP dentro de la red edge.
+  reverse-proxy:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    build: ./reverse-proxy
+    container_name: tint-reverse-proxy
     networks:
       - edge
-      - app
       - media
     restart: unless-stopped
     <<: *env-check
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      env-check:
+        condition: service_completed_successfully
+      gateway:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     ports:
       - "${GATEWAY_HTTP_PORT:-80}:80"
       - "${GATEWAY_HTTPS_PORT:-443}:443"
     environment:
       GATEWAY_HOST: ${GATEWAY_HOST:-localhost}
       GATEWAY_HTTPS_PORT: ${GATEWAY_HTTPS_PORT:-443}
-      IDENTITY_API_UPSTREAM: ${IDENTITY_API_UPSTREAM:-identity-api:8081}
+      # Límite grueso por IP (el fino es por usuario, en Caddy). El banco lo sube porque su
+      # generador de carga sale de una sola IP.
+      EDGE_RATE_PER_IP: ${EDGE_RATE_PER_IP:-300}
+      EDGE_BURST_PER_IP: ${EDGE_BURST_PER_IP:-600}
+    volumes:
+      - edge-certs:/etc/nginx/certs
+    # worker_connections 4096 (nginx.conf): sin esto el límite de 1024 descriptores corta conexiones.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Router interno (ADR 0020, 0028, 0031): Caddy 2.9.1 con caddy-ratelimit, HTTP en :8080, sin
+  # puertos publicados. Enruta, hace forward_auth y el límite por usuario.
+  gateway:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    build: ./gateway
+    container_name: tint-gateway
+    networks:
+      - edge
+      - app
+    restart: unless-stopped
+    depends_on:
+      env-check:
+        condition: service_completed_successfully
+      # Sin identity-api no hay forward_auth (ADR 0032).
+      identity-api:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      IDENTITY_API_HOST: ${IDENTITY_API_HOST:-identity-api}
+      IDENTITY_API_PORT: ${IDENTITY_API_PORT:-8081}
       SYNC_CORE_UPSTREAM: ${SYNC_CORE_UPSTREAM:-sync-core:8080}
       SOCIAL_CORE_UPSTREAM: ${SOCIAL_CORE_UPSTREAM:-social-core:8082}
       ANALYTICS_UPSTREAM: ${ANALYTICS_UPSTREAM:-analytics:8084}
@@ -90,12 +140,17 @@ services:
       - gateway-data:/data
       - gateway-config:/config
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "--no-check-certificate", "https://localhost/healthz"]
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8080/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   web:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     build:
       context: ./apps/web
       args:
@@ -130,6 +185,11 @@ services:
       retries: 5
 
   postgres:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     image: postgres:16-alpine
     container_name: tint-postgres
     networks:
@@ -150,6 +210,11 @@ services:
       retries: 10
 
   redis:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     image: redis:7-alpine
     container_name: tint-redis
     networks:
@@ -167,6 +232,11 @@ services:
       retries: 10
 
   minio:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     #image: minio/minio:latest
     image: pgsty/minio@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372 # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
     container_name: tint-minio
@@ -219,6 +289,10 @@ services:
   # Media worker (Python + FFmpeg): consume media:uploads, valida el vídeo subido
   # a incoming/, extrae el Ambilight y publica {id}/source.<ext> + ambilight.json.
   media-worker:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     build: ./services/media-worker
     container_name: tint-media-worker
     networks:
@@ -254,6 +328,10 @@ services:
   # Analítica (Python): consume analytics:events, guarda telemetry_events/room_kpis y
   # expone la API de solo lectura de KPIs para el host. JWT_* deben ser los de identity-api.
   analytics:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     build: ./services/analytics
     container_name: tint-analytics
     networks:
@@ -297,6 +375,10 @@ services:
   # sensibles en audit_entries (solo INSERT + cadena de hashes). Interna: sin puerto publicado ni
   # ruta en el gateway; se consulta con `docker compose exec audit-log python -m audit_log.list`.
   audit-log:
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     build: ./services/audit-log
     container_name: tint-audit-log
     networks:
@@ -324,6 +406,11 @@ services:
 
   # Canal Social (/ws/social): chat en vivo con historial corto en Redis.
   social-core:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     build: ./services/social-core
     container_name: tint-social-core
     networks:
@@ -364,6 +451,11 @@ services:
 
   # Canal Sync (Go). JWT_SECRET debe ser el mismo que usa identity-api.
   sync-core:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     build: ./services/sync-core
     container_name: tint-sync-core
     networks:
@@ -391,9 +483,30 @@ services:
       timeout: 5s
       retries: 5
 
-  identity-api:
+  # ADR 0032: las migraciones corren una sola vez, antes de las réplicas. Si cada réplica migrara al
+  # arrancar, en un volumen vacío chocarían (medido: una quedaba unhealthy y `up` fallaba).
+  identity-migrate:
     build: ./services/identity-api
-    container_name: tint-identity-api
+    command: ["npm", "run", "migrate"]
+    restart: "no"
+    networks:
+      - data
+    depends_on:
+      env-check:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tint}
+
+  identity-api:
+    # ADR 0032: réplicas sin estado (todo vive en PostgreSQL y Redis); Caddy las reparte.
+    deploy:
+      replicas: ${IDENTITY_API_REPLICAS:-2}
+      resources:
+        limits:
+          memory: 1G
+    build: ./services/identity-api
     networks:
       - app
       - data
@@ -408,6 +521,10 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      identity-migrate:
+        condition: service_completed_successfully
+    # Sin `npm run migrate`: lo hace identity-migrate una sola vez (ADR 0032).
+    command: ["npm", "start"]
     environment:
       IDENTITY_API_PORT: 8081
       # Desarrollo local: permite el modo Firebase Auth Emulator. El override de producción
@@ -428,13 +545,11 @@ services:
       # Solo desarrollo (ADR 0024): acepta los ID tokens sin firma del emulador. Vacío = Firebase real.
       FIREBASE_AUTH_EMULATOR_HOST: ${FIREBASE_AUTH_EMULATOR_HOST:-}
       MINIO_ENDPOINT: http://minio:9000
-      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-https://localhost}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-tintadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-tint-media}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-    ports:
-      - "8081:8081"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:8081/api/v1/healthz').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
       interval: 10s
@@ -444,6 +559,11 @@ services:
   # Canal de Voz (C++): señalización WebRTC (/ws/voice), membresía y moderación de la voz.
   # El audio viaja P2P entre navegadores; coturn hace de STUN/TURN. JWT_* deben ser los de identity-api.
   voice-core:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     build: ./services/voice-core
     container_name: tint-voice-core
     networks:
@@ -481,6 +601,10 @@ services:
   # social-core escribe aquí; la colección y los índices se crean en el primer
   # arranque de social-core (ver services/social-core PR SOC-07).
   mongodb:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     image: mongo:8.0
     container_name: tint-mongodb
     networks:
@@ -542,6 +666,11 @@ services:
   # WebRTC en un solo puerto UDP (ICE UDP mux). STREAM_PUBLIC_IP es la IP que el navegador
   # alcanza (127.0.0.1 si navegas en la misma máquina; la IP de la LAN para otros equipos).
   stream-core:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     build: ./services/stream-core
     container_name: tint-stream-core
     networks:
@@ -585,6 +714,11 @@ services:
   # real de Firebase. Emite ID tokens SIN firma; el navegador lo usa en http://localhost:9099
   # (solo loopback). docker-compose.production.yml no lo arranca.
   firebase-auth-emulator:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     build: ./firebase-auth-emulator
     container_name: tint-firebase-auth-emulator
     networks:
@@ -604,6 +738,11 @@ services:
   # STUN/TURN para la voz. Red del host: el relay debe anunciar direcciones alcanzables
   # desde el navegador (en Linux). Credenciales efímeras firmadas con TURN_SECRET (REST API de TURN).
   coturn:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     image: coturn/coturn:4.6.3
     container_name: tint-coturn
     <<: *env-check
@@ -642,6 +781,7 @@ networks:
   media:
 
 volumes:
+  edge-certs:
   gateway-data:
   gateway-config:
   postgres-data:
