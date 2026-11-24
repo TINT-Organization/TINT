@@ -40,6 +40,8 @@ services:
   identity-api:
     container_name: !reset null
     image: tint-monorepo-identity-api:${BENCH_IMAGE_TAG:-latest}
+  identity-migrate:
+    image: tint-monorepo-identity-migrate:${BENCH_IMAGE_TAG:-latest}
   voice-core:
     container_name: !reset null
     image: tint-monorepo-voice-core:${BENCH_IMAGE_TAG:-latest}

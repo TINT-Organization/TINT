@@ -19,7 +19,7 @@ CADDYFILE = ROOT / "gateway" / "Caddyfile"
 ADR = ROOT / "docs" / "adr" / "0032-resiliencia-replicas-y-salud.md"
 ADR_INDEX = ROOT / "docs" / "adr" / "README.md"
 
-ONE_SHOT = {"env-check", "minio-init", "mongo-init"}
+ONE_SHOT = {"env-check", "minio-init", "mongo-init", "identity-migrate"}
 STORES = {"postgres", "redis", "mongodb", "minio"}
 
 
@@ -34,6 +34,28 @@ class IdentityReplicasTests(unittest.TestCase):
     def test_replicas_cannot_have_a_fixed_name_or_host_port(self):
         self.assertNotIn("container_name", self.identity)
         self.assertNotIn("ports", self.identity)
+
+
+class MigrationsRunOnceTests(unittest.TestCase):
+    """Con réplicas, cada una corría `npm run migrate` al arrancar y en un volumen vacío chocaban
+    (una quedaba unhealthy y `up` fallaba; medido 1 de cada 18 arranques). Migra un contenedor
+    de una sola vez y las réplicas solo arrancan."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.services = load(COMPOSE)["services"]
+
+    def test_a_one_shot_container_migrates_with_the_identity_image(self):
+        migrate = self.services["identity-migrate"]
+        self.assertEqual(migrate["build"], self.services["identity-api"]["build"])
+        self.assertIn("npm run migrate", " ".join(migrate["command"]))
+        self.assertEqual(migrate["restart"], "no")
+        self.assertEqual(migrate["depends_on"]["postgres"]["condition"], "service_healthy")
+
+    def test_replicas_wait_for_the_migration_and_do_not_migrate(self):
+        identity = self.services["identity-api"]
+        self.assertEqual(identity["depends_on"]["identity-migrate"]["condition"], "service_completed_successfully")
+        self.assertNotIn("migrate", " ".join(identity["command"]))
 
 
 class CaddyLoadBalancingTests(unittest.TestCase):

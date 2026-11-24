@@ -483,6 +483,22 @@ services:
       timeout: 5s
       retries: 5
 
+  # ADR 0032: las migraciones corren una sola vez, antes de las réplicas. Si cada réplica migrara al
+  # arrancar, en un volumen vacío chocarían (medido: una quedaba unhealthy y `up` fallaba).
+  identity-migrate:
+    build: ./services/identity-api
+    command: ["npm", "run", "migrate"]
+    restart: "no"
+    networks:
+      - data
+    depends_on:
+      env-check:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tint}
+
   identity-api:
     # ADR 0032: réplicas sin estado (todo vive en PostgreSQL y Redis); Caddy las reparte.
     deploy:
@@ -505,6 +521,10 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      identity-migrate:
+        condition: service_completed_successfully
+    # Sin `npm run migrate`: lo hace identity-migrate una sola vez (ADR 0032).
+    command: ["npm", "start"]
     environment:
       IDENTITY_API_PORT: 8081
       # Desarrollo local: permite el modo Firebase Auth Emulator. El override de producción

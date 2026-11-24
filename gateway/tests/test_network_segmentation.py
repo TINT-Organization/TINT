@@ -29,6 +29,7 @@ DATA_HELPERS = ("minio-init", "mongo-init")
 # Servicios que hablan con un almacén (y por eso viven también en `data`).
 DATA_CLIENTS = (
     "identity-api",
+    "identity-migrate",
     "media-worker",
     "analytics",
     "audit-log",

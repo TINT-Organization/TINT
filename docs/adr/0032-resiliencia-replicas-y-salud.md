@@ -11,6 +11,7 @@ El Laboratorio 6 ([resultados](../resultados-rendimiento-lab6.md), rama `chore/l
 
 ## Decisión
 1. **identity-api con réplicas** (`deploy.replicas: ${IDENTITY_API_REPLICAS:-2}`). Es un servicio sin estado propio (sesiones, revocación y datos viven en PostgreSQL y Redis), así que escala horizontalmente. Las réplicas no tienen `container_name` ni puerto en el host (en producción ya no lo tenía; en desarrollo se entra por el borde, ADR 0031).
+   - **Las migraciones corren una sola vez** en el contenedor de un solo uso `identity-migrate` (misma imagen, `npm run migrate`, solo en la red `data`); las réplicas esperan a que termine (`service_completed_successfully`) y arrancan con `npm start`. Si cada réplica migrara al arrancar, en un volumen vacío chocarían: lo midió el banco (una réplica quedaba unhealthy y `up` fallaba en 1 de 18 arranques).
 2. **Caddy reparte y conmuta** con el snippet `(identity_upstream)`, usado por `forward_auth` y por la ruta `/api/*`:
    - `dynamic a {$IDENTITY_API_HOST:identity-api} {$IDENTITY_API_PORT:8081}` (refresco 5 s): una IP por réplica desde el DNS de Docker.
    - `lb_policy least_conn`.
