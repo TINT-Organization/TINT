@@ -55,6 +55,147 @@ class K6SummaryTests(unittest.TestCase):
         self.assertEqual(summarize.k6_values(data)["ws_connecting.p95"], 30.0)
 
 
+def _level_export(levels: dict[int, tuple[float, float, float, int]]) -> dict:
+    """Export de k6 con submétricas por nivel: {vus: (avg, p95, tasa de fallos, peticiones)}."""
+    metrics = {"http_req_duration": {"avg": 1.0, "p(95)": 1.0}}
+    for vus, (avg, p95, failed, count) in levels.items():
+        metrics[f"http_req_duration{{level:{vus}}}"] = {"avg": avg, "med": avg, "p(95)": p95, "p(99)": p95, "thresholds": {}}
+        metrics[f"http_req_failed{{level:{vus}}}"] = {"value": failed, "passes": 0, "fails": count}
+        metrics[f"http_reqs{{level:{vus}}}"] = {"count": count, "rate": 1.0}
+    return {"metrics": metrics}
+
+
+class LevelCurveTests(unittest.TestCase):
+    def test_extracts_one_point_per_vu_level_sorted_by_level(self):
+        data = _level_export({50: (12.0, 20.0, 0.0, 1500), 1: (9.0, 11.0, 0.0, 30)})
+
+        curve = summarize.level_curve(data, hold_s=30)
+
+        self.assertEqual([p["vus"] for p in curve], [1, 50])
+        self.assertEqual(curve[1]["avg_ms"], 12.0)
+        self.assertEqual(curve[1]["p95_ms"], 20.0)
+        self.assertEqual(curve[1]["rps"], 50.0)
+        self.assertEqual(curve[1]["failed"], 0.0)
+
+    def test_ignores_metrics_of_other_tags(self):
+        data = _level_export({1: (9.0, 11.0, 0.0, 30)})
+        data["metrics"]["http_req_duration{layer:caddy}"] = {"avg": 1.0, "p(95)": 2.0}
+
+        self.assertEqual(len(summarize.level_curve(data, hold_s=30)), 1)
+
+    def test_curve_can_be_filtered_by_an_extra_tag(self):
+        data = {"metrics": {
+            "http_req_duration{layer:caddy,level:50}": {"avg": 2.0, "p(95)": 3.0},
+            "http_req_duration{layer:auth,level:50}": {"avg": 9.0, "p(95)": 15.0},
+        }}
+
+        curve = summarize.level_curve(data, hold_s=30, tag="layer:auth")
+
+        self.assertEqual(curve[0]["avg_ms"], 9.0)
+
+
+class KneeTests(unittest.TestCase):
+    def test_knee_is_the_last_level_before_the_first_failures(self):
+        curve = [{"vus": 1, "p95_ms": 10.0, "failed": 0.0, "rps": 1.0},
+                 {"vus": 200, "p95_ms": 20.0, "failed": 0.0, "rps": 190.0},
+                 {"vus": 500, "p95_ms": 40.0, "failed": 0.02, "rps": 300.0}]
+
+        knee = summarize.find_knee(curve)
+
+        self.assertEqual(knee["knee_vus"], 200)
+        self.assertEqual(knee["degraded_vus"], 500)
+        self.assertIn("fallos", knee["reason"])
+
+    def test_latency_explosion_also_marks_degradation(self):
+        curve = [{"vus": 1, "p95_ms": 10.0, "failed": 0.0, "rps": 1.0},
+                 {"vus": 50, "p95_ms": 30.0, "failed": 0.0, "rps": 49.0},
+                 {"vus": 200, "p95_ms": 500.0, "failed": 0.0, "rps": 120.0}]
+
+        knee = summarize.find_knee(curve, latency_factor=10)
+
+        self.assertEqual(knee["knee_vus"], 50)
+        self.assertIn("p95", knee["reason"])
+
+    def test_cold_start_on_the_first_level_does_not_inflate_the_latency_base(self):
+        curve = [{"vus": 1, "p95_ms": 120.0, "failed": 0.0, "rps": 1.0},
+                 {"vus": 50, "p95_ms": 12.0, "failed": 0.0, "rps": 49.0},
+                 {"vus": 200, "p95_ms": 300.0, "failed": 0.0, "rps": 150.0}]
+
+        self.assertEqual(summarize.find_knee(curve, latency_factor=10)["degraded_vus"], 200)
+
+    def test_no_degradation_means_knee_is_above_the_last_level(self):
+        curve = [{"vus": 1, "p95_ms": 10.0, "failed": 0.0, "rps": 1.0},
+                 {"vus": 50, "p95_ms": 12.0, "failed": 0.0, "rps": 49.0}]
+
+        knee = summarize.find_knee(curve)
+
+        self.assertEqual(knee["knee_vus"], 50)
+        self.assertIsNone(knee["degraded_vus"])
+
+    def test_curve_markdown_has_one_row_per_level_and_marks_the_knee(self):
+        curve = [{"vus": 1, "avg_ms": 9.0, "p95_ms": 10.0, "p99_ms": 11.0, "failed": 0.0, "rps": 1.0, "reqs": 30},
+                 {"vus": 50, "avg_ms": 12.0, "p95_ms": 20.0, "p99_ms": 25.0, "failed": 0.0, "rps": 49.0, "reqs": 1470}]
+
+        text = summarize.curve_markdown(curve, summarize.find_knee(curve))
+
+        self.assertEqual(text.count("\n| "), 3)  # separador y una fila por nivel
+        self.assertIn("knee", text)
+
+
+class Lab6ReportTests(unittest.TestCase):
+    def _write_runs(self, root: Path) -> None:
+        import json
+
+        for n, p95 in ((1, 20.0), (2, 24.0), (3, 22.0)):
+            run = root / f"run-{n}"
+            run.mkdir()
+            data = _level_export({1: (9.0, 10.0, 0.0, 30), 50: (12.0, p95, 0.0, 1500)})
+            (run / "lab6-playback.json").write_text(json.dumps(data))
+            (run / "cpu-portatil-playback.csv").write_text("epoch,cpu_pct\n1,20.0\n2,85.5\n")
+            (run / "stats-lab6-playback.csv").write_text("tintbench-identity-api-1,40.00%,100MiB / 8GiB\n")
+
+    def test_median_curve_per_target_across_runs(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_runs(Path(tmp))
+
+            curves = summarize.lab6_curves(Path(tmp), hold_s=30)
+
+        self.assertEqual([p["vus"] for p in curves["playback"]], [1, 50])
+        self.assertEqual(curves["playback"][1]["p95_ms"], 22.0)
+
+    def test_report_has_knee_generator_cpu_and_container_resources(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_runs(Path(tmp))
+
+            text = summarize.lab6_report(Path(tmp), hold_s=30, plot=False)
+
+        self.assertIn("## playback", text)
+        self.assertIn("Knee", text)
+        self.assertIn("85.5", text)
+        self.assertIn("identity-api", text)
+
+    def test_gateway_target_is_split_by_layer(self):
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "run-1"
+            run.mkdir()
+            run.joinpath("lab6-gateway.json").write_text(json.dumps({"metrics": {
+                "http_req_duration{layer:caddy,level:1}": {"avg": 1.0, "p(95)": 2.0},
+                "http_req_duration{layer:auth,level:1}": {"avg": 8.0, "p(95)": 12.0},
+            }}))
+
+            curves = summarize.lab6_curves(Path(tmp), hold_s=30)
+
+        self.assertEqual(curves["gateway/caddy"][0]["p95_ms"], 2.0)
+        self.assertEqual(curves["gateway/auth"][0]["avg_ms"], 8.0)
+
+
 class DockerStatsTests(unittest.TestCase):
     def test_parses_one_sample_line(self):
         row = summarize.parse_stats_line("tint-gateway,12.50%,93.25MiB / 7.69GiB")
