@@ -213,7 +213,7 @@ sequenceDiagram
     H->>ID: POST /api/v1/rooms/:id/analytics-ticket (ID token de Firebase, dueño)
     ID-->>H: { token, expiresAt } HS256, role host, room_id, jti, 10 min
     H->>API: GET /api/v1/rooms/:id/kpis (Bearer analytics-ticket)
-    API->>API: jwt.decode HS256, iss, aud, exige exp, iss, aud y jti
+    API->>API: jwt.decode HS256, iss, aud ∈ {JWT_AUDIENCE, JWT_LEGACY_AUDIENCE si tiene valor}, exige exp, iss, aud y jti; otra audiencia → 401
     API->>R: EXISTS token:revoked:{jti}
     alt Redis no responde
         API-->>H: 503
@@ -324,7 +324,8 @@ Tipos que llegan hoy, por productor: identity-api (`user_login`, `room_created`,
 | :--- | :--- | :--- |
 | `DATABASE_URL` | — (**obligatoria**) | La misma base `tint` del resto de servicios |
 | `JWT_SECRET` | — (**obligatoria**) | **Contrato**: el mismo de identity-api |
-| `JWT_ISSUER` / `JWT_AUDIENCE` | `tint-identity` / `tint:room` | **Contrato**: iguales que en identity-api |
+| `JWT_ISSUER` / `JWT_AUDIENCE` | `tint-identity` / `tint:analytics` | **Contrato**: `JWT_ISSUER` igual que en identity-api; `JWT_AUDIENCE` es la audiencia propia de analytics ([ADR 0030](../../docs/adr/0030-tickets-por-servicio-minimo-privilegio.md)) |
+| `JWT_LEGACY_AUDIENCE` | — (vacía) | Audiencia legada (`tint:room`) aceptada solo durante la transición del ADR 0030; vacía = desactivada (falla cerrado) |
 | `REDIS_URL` | `redis://localhost:6379` | |
 | `ANALYTICS_PORT` | `8084` | Entero de 1 a 65535 |
 | `ANALYTICS_ALLOWED_ORIGINS` | `http://localhost:5173` | Lista separada por comas, con esquema |

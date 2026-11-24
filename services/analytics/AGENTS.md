@@ -56,9 +56,9 @@ Cómo funciona el servicio por dentro (ingesta, sanitización, KPIs y API): [REA
 KPIs: `peak_users`/`avg_users` salen de `connected_users` de `presence` (promedio simple de las muestras); `avg_drift_ms` es el promedio de `|drift_ms|` de `drift_correction`; `trivia_accuracy_pct` de `trivia_answer.correct`; los conteos, del número de eventos de cada tipo; `avg_buffering_ms` y `total_buffering_ms`, de `buffering.duration_ms`; `avg_rtt_ms` y `p95_drift_ms`, de `rtt_ms` y `|drift_ms|` de `drift_correction`. QoS = RTT y drift; QoE = buffering. Los valores llegan de Redis como texto y se interpretan con tolerancia (`"3"`, `"true"`).
 
 ## API (solo lectura, puerto `ANALYTICS_PORT`, por defecto 8084)
-Auth: `Authorization: Bearer <analytics-ticket>` (lo emite identity-api en `POST /api/v1/rooms/:id/analytics-ticket`). HS256 con `JWT_SECRET`, `iss` = `JWT_ISSUER`, `aud` = `JWT_AUDIENCE`; `exp` y `jti` obligatorios. `role` debe ser `host` y `room_id` igual al `{id}` de la ruta. Si existe `token:revoked:{jti}` → 401; si Redis no responde → 503 (**falla cerrado**).
+Auth: `Authorization: Bearer <analytics-ticket>` (lo emite identity-api en `POST /api/v1/rooms/:id/analytics-ticket`). HS256 con `JWT_SECRET`, `iss` = `JWT_ISSUER`; `exp` y `jti` obligatorios. **Audiencia propia** ([ADR 0030](../../docs/adr/0030-tickets-por-servicio-minimo-privilegio.md)): el `aud` (texto o lista) debe incluir `JWT_AUDIENCE` (`tint:analytics`) o, solo durante la transición y si tiene valor, `JWT_LEGACY_AUDIENCE`; un ticket de otro servicio (`tint:sync`, `tint:social`, `tint:voice`, `tint:stream`, `tint:api`) → `401 {"error":"token inválido"}`, igual que una firma inválida. `role` debe ser `host` y `room_id` igual al `{id}` de la ruta. Si existe `token:revoked:{jti}` → 401; si Redis no responde → 503 (**falla cerrado**).
 
-Errores: `{ "error": "<mensaje>" }` con 400 (parámetro fuera de rango), 401 (sin token, firma inválida, expirado o revocado), 403 (rol o sala distintos), 404, 405 y 503 (Redis o PostgreSQL caídos). CORS según `ANALYTICS_ALLOWED_ORIGINS` (también en errores), con preflight `OPTIONS` que permite `Authorization`.
+Errores: `{ "error": "<mensaje>" }` con 400 (parámetro fuera de rango), 401 (sin token, firma inválida, audiencia ajena, expirado o revocado), 403 (rol o sala distintos), 404, 405 y 503 (Redis o PostgreSQL caídos). CORS según `ANALYTICS_ALLOWED_ORIGINS` (también en errores), con preflight `OPTIONS` que permite `Authorization`.
 
 | Ruta | Respuesta |
 | :--- | :--- |
@@ -75,7 +75,8 @@ El plano interno de coordinación expone `POST /internal/events/start/{room_id}`
 | :--- | :--- | :--- |
 | `DATABASE_URL` | — (**obligatoria**) | Igual que media-worker. |
 | `JWT_SECRET` | — (**obligatoria**) | El mismo de identity-api. Sin él no arranca. |
-| `JWT_ISSUER` / `JWT_AUDIENCE` | `tint-identity` / `tint:room` | |
+| `JWT_ISSUER` / `JWT_AUDIENCE` | `tint-identity` / `tint:analytics` | `JWT_AUDIENCE` es la audiencia propia del servicio (ADR 0030); Compose le da `tint:analytics`. |
+| `JWT_LEGACY_AUDIENCE` | — (vacía) | Audiencia legada (`tint:room`) aceptada solo durante la transición del ADR 0030. Vacía = desactivada (**falla cerrado**). |
 | `REDIS_URL` | `redis://localhost:6379` | |
 | `ANALYTICS_PORT` | `8084` | |
 | `ANALYTICS_ALLOWED_ORIGINS` | `http://localhost:5173` | Lista separada por comas, con esquema. |

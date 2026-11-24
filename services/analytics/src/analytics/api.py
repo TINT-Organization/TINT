@@ -5,7 +5,10 @@ Lectura diferida para el host: nunca tiempo real ni eventos crudos. La lógica v
 `http.server.ThreadingHTTPServer` de la stdlib.
 
 Auth: `Authorization: Bearer <analytics-ticket>` HS256 emitido por identity-api (`iss`, `aud`,
-`exp` y `jti` obligatorios), `role == "host"` y `room_id` igual al de la ruta. Si existe
+`exp` y `jti` obligatorios), `role == "host"` y `room_id` igual al de la ruta. El `aud` (texto o
+lista) debe incluir la audiencia propia del servicio (`JWT_AUDIENCE`, `tint:analytics`) o, solo
+durante la transición del ADR 0030 y si tiene valor, `JWT_LEGACY_AUDIENCE`; un ticket de otro
+servicio (`tint:sync`, `tint:voice`…) es un token inválido → 401. Si existe
 `token:revoked:{jti}` → 401; si Redis no responde → 503 (falla cerrado).
 
 Aparte, `GET /api/v1/analytics/overview` entrega el panel de negocio (DAU/MAU, volumen de
@@ -118,12 +121,19 @@ class AnalyticsApi:
         allowed_origins: Iterable[str] = DEFAULT_ALLOWED_ORIGINS,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         admin_password: str | None = None,
+        legacy_audience: str | None = None,
     ) -> None:
         self.repo = repo
         self.redis = redis
         self.secret = secret
         self.issuer = issuer
         self.audience = audience
+        # Vacía o ausente = desactivada (falla cerrado): solo se acepta la audiencia propia.
+        self.legacy_audience = legacy_audience or None
+        self._accepted_audiences = [
+            audience,
+            *([self.legacy_audience] if self.legacy_audience else []),
+        ]
         self.allowed_origins = frozenset(allowed_origins)
         self.clock = clock
         self.admin_password = admin_password or None
@@ -222,7 +232,7 @@ class AnalyticsApi:
                 self.secret,
                 algorithms=["HS256"],
                 issuer=self.issuer,
-                audience=self.audience,
+                audience=self._accepted_audiences,
                 options={"require": ["exp", "iss", "aud", "jti"]},
             )
         except jwt.ExpiredSignatureError as exc:

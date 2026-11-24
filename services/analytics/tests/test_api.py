@@ -15,7 +15,8 @@ from analytics.kpis import HEATMAP_TYPES, KPI_TYPES, TIMELINE_TYPES
 
 SECRET = "test-secret"
 ISSUER = "tint-identity"
-AUDIENCE = "tint:room"
+AUDIENCE = "tint:analytics"
+LEGACY_AUDIENCE = "tint:room"
 ROOM = "3d97d007-29c0-4cec-bb61-cb37683c3256"
 ORIGIN = "http://localhost:5173"
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
@@ -39,9 +40,10 @@ def token(**overrides):
     return jwt.encode(claims, secret, algorithm="HS256")
 
 
-def make_api(repo=None, redis=None, origins=(ORIGIN,), admin_password=None):
+def make_api(repo=None, redis=None, origins=(ORIGIN,), admin_password=None, legacy_audience=None):
     return AnalyticsApi(
         admin_password=admin_password,
+        legacy_audience=legacy_audience,
         repo=repo or FakeReadRepository(),
         redis=redis or FakeRedis(),
         secret=SECRET,
@@ -170,6 +172,52 @@ def test_missing_or_malformed_authorization_is_401(authorization):
 )
 def test_invalid_tokens_are_401(bad_token):
     assert get(make_api(), kpis_path(), bearer=bad_token).status == 401
+
+
+# --- ADR 0030 (escenario 4): una audiencia por servicio -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "foreign_audience", ["tint:sync", "tint:social", "tint:voice", "tint:stream", "tint:api"]
+)
+def test_tickets_of_other_services_are_401(foreign_audience):
+    response = get(make_api(), kpis_path(), bearer=token(aud=foreign_audience))
+    assert response.status == 401
+    assert response.body == {"error": "token inválido"}
+
+
+@pytest.mark.parametrize(
+    "foreign_audience", ["tint:sync", "tint:social", "tint:voice", "tint:stream", "tint:api"]
+)
+def test_tickets_of_other_services_are_401_even_with_legacy_enabled(foreign_audience):
+    api = make_api(legacy_audience=LEGACY_AUDIENCE)
+    assert get(api, kpis_path(), bearer=token(aud=foreign_audience)).status == 401
+
+
+def test_own_audience_is_accepted():
+    assert get(make_api(), kpis_path(), bearer=token(aud="tint:analytics")).status == 200
+
+
+def test_array_audience_containing_own_is_accepted():
+    bearer = token(aud=["tint:sync", "tint:analytics"])
+    assert get(make_api(), kpis_path(), bearer=bearer).status == 200
+
+
+def test_array_audience_without_own_is_401():
+    bearer = token(aud=["tint:sync", "tint:voice"])
+    assert get(make_api(), kpis_path(), bearer=bearer).status == 401
+
+
+@pytest.mark.parametrize("legacy", [None, ""])
+def test_legacy_audience_is_rejected_when_disabled(legacy):
+    api = make_api(legacy_audience=legacy)
+    assert get(api, kpis_path(), bearer=token(aud=LEGACY_AUDIENCE)).status == 401
+
+
+def test_legacy_audience_is_accepted_only_when_configured():
+    api = make_api(legacy_audience=LEGACY_AUDIENCE)
+    assert get(api, kpis_path(), bearer=token(aud=LEGACY_AUDIENCE)).status == 200
+    assert get(api, kpis_path(), bearer=token(aud="tint:analytics")).status == 200
 
 
 def test_revoked_token_is_401():

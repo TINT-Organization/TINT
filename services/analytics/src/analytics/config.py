@@ -21,7 +21,10 @@ class Settings:
     database_url: str = field(repr=False)
     jwt_secret: str = field(repr=False)
     jwt_issuer: str = "tint-identity"
-    jwt_audience: str = "tint:room"
+    # Audiencia propia (ADR 0030): solo se aceptan tickets emitidos para analytics.
+    jwt_audience: str = "tint:analytics"
+    # Audiencia legada aceptada durante la transición; vacía = desactivada (falla cerrado).
+    jwt_legacy_audience: str | None = None
     redis_url: str = "redis://localhost:6379"
     port: int = DEFAULT_PORT
     allowed_origins: tuple[str, ...] = DEFAULT_ALLOWED_ORIGINS
@@ -42,6 +45,7 @@ class Settings:
         for var, attr in (
             ("JWT_ISSUER", "jwt_issuer"),
             ("JWT_AUDIENCE", "jwt_audience"),
+            ("JWT_LEGACY_AUDIENCE", "jwt_legacy_audience"),
             ("REDIS_URL", "redis_url"),
             # Nombre estable por réplica: al reiniciar recupera sus propios pendientes.
             ("ANALYTICS_CONSUMER", "consumer"),
