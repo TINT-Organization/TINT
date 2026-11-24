@@ -25,6 +25,7 @@ Documento de dominio: [docs/dominio-transmision.md](../../docs/dominio-transmisi
 - ❌ **No transcodifica ni decodifica.** Recibe VP8 y Opus y los reenvía tal cual.
 - ❌ **No escribe `rooms.status`.** Al vencer la gracia llama a `POST /api/v1/internal/rooms/{id}/disable` de identity-api, que es la dueña del estado (ADR 0019).
 - ❌ No lee PostgreSQL. Autoriza con el JWT y Redis.
+- **Audiencia propia** ([ADR 0030](../../docs/adr/0030-tickets-por-servicio-minimo-privilegio.md)): el JWT HS256 de WHIP/WHEP (`/api/v1/stream/...`) debe llevar `aud` `tint:stream` (string o lista; ticket `stream`). Un ticket de otro servicio (`tint:sync`, `tint:voice`, …) es un token inválido más: `401 UNAUTHORIZED`. Durante la transición también se acepta `JWT_LEGACY_AUDIENCE` si tiene valor; vacía queda desactivada (falla cerrado). El cliente de identity-api (`src/identity`) no usa JWT: llama al interno con `X-Internal-Token`.
 - ❌ Nunca expone el `jti` ni datos de otros viewers.
 - ✅ Lee `room:{id}:sync` **solo** para `REVOKED` y `ROOM_CLOSED`. Publica en `room:{id}:stream` (`STREAM_STARTED`/`STREAM_ENDED`), que consume social-core.
 
@@ -114,7 +115,9 @@ make e2e-stream
 | `STREAM_MAX_VIEWERS` | `50` | Cupo por sala (1–50). El viewer siguiente recibe `409 ROOM_FULL`. |
 | `STREAM_HOST_GRACE_S` | `60` | Gracia del host (10–300 s). |
 | `REDIS_URL` | — (obligatoria) | Revocación y estado de la sala. |
-| `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` | — / `tint-identity` / `tint:room` | Iguales a los de identity-api. |
+| `JWT_SECRET` / `JWT_ISSUER` | — / `tint-identity` | Iguales a los de identity-api. |
+| `JWT_AUDIENCE` | `tint:stream` | Audiencia propia de stream-core (ADR 0030): `aud` (string o lista) debe contenerla. Compose le da `tint:stream`. |
+| `JWT_LEGACY_AUDIENCE` | vacío | Transición del ADR 0030: si tiene valor (p. ej. `tint:room`), también se acepta esa audiencia. Vacía = desactivada (falla cerrado). |
 | `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | `host[:puerto]`. En compose viene de `STREAM_ALLOWED_ORIGINS`. |
 | `IDENTITY_API_URL` / `INTERNAL_API_SECRET` | — (obligatorias) | Para `POST /api/v1/internal/rooms/{id}/disable` con `X-Internal-Token`. |
 | `STUN_URLS` / `TURN_URLS` / `TURN_SECRET` / `TURN_TTL_SECONDS` | vacío / vacío / vacío / `3600` | Se entregan al cliente en `Link` y en `/ice-servers` (REST API de TURN, igual que voice-core). |
