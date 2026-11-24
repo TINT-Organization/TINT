@@ -5,7 +5,7 @@ Eres el agente del **Canal de Voz** de TINT: los participantes de una sala habla
 
 - **Salas de voz:** una por `room_id`, creada al entrar el primero y olvidada al salir el último.
 - **Membresía:** quién está en la voz, con cupo máximo (`VOICE_MAX_MEMBERS`, mesh), avisos `peer_joined`/`peer_left`.
-- **Autorización:** el mismo JWT HS256 de identity-api que usan sync-core y social-core, más la revocación `token:revoked:{jti}` (falla cerrado).
+- **Autorización:** JWT HS256 de identity-api con la audiencia propia `tint:voice` (ticket `voice`, [ADR 0030](../../docs/adr/0030-tickets-por-servicio-minimo-privilegio.md)), más la revocación `token:revoked:{jti}` (falla cerrado). Un ticket de otro servicio (`tint:sync`, `tint:stream`, …) se rechaza como un token inválido.
 - **Señalización:** reenvía offer/answer/candidatos ICE (`signal`) solo entre miembros de la misma sala, con el remitente que fija el servidor.
 - **Moderación:** silencio propio (`self_mute`) y silencio del host (`host_mute` por WebSocket o REST), persistido en Redis para que siga vigente al volver a entrar.
 - **Salas `live` (ADR 0019):** cierre de la sala (`ROOM_CLOSED` → `4010`) y **modo escenario**: en una sala `live` solo entran a la voz el host, los cohost y los invitados al escenario (`4009` para el resto).
@@ -34,7 +34,7 @@ Las versiones las fija la imagen base (`debian:trixie-slim` en el `Dockerfile`, 
 - ✅ Lee `room:{id}:sync` **solo** para `REVOKED` y `ROOM_CLOSED` (mismo contrato que social-core).
 
 ## Protocolo del Canal de Voz
-`GET /ws/voice?room_id=<id>&token=<guest token o sync-ticket>` · JSON · todo evento lleva `event_id`, `occurred_at` (reloj del emisor) y `received_at` (reloj del servidor).
+`GET /ws/voice?room_id=<id>&token=<ticket voice>` (durante la transición del ADR 0030 también el guest token o el sync-ticket con la audiencia legada) · JSON · todo evento lleva `event_id`, `occurred_at` (reloj del emisor) y `received_at` (reloj del servidor).
 
 | Dirección | `type` | Campos | Notas |
 | :--- | :--- | :--- | :--- |
@@ -65,7 +65,7 @@ Las versiones las fija la imagen base (`debian:trixie-slim` en el `Dockerfile`, 
 | Ruta distinta de `/ws/voice` | 404 |
 | `Origin` presente y fuera de `ALLOWED_ORIGINS` | 403 (sin `Origin` no es un navegador: se acepta) |
 | Falta `room_id` o `token` | 400 |
-| Firma, `alg`, `iss`, `aud`, claims o rol inválidos | 401 antes del upgrade |
+| Firma, `alg`, `iss`, `aud`, claims o rol inválidos (incluye un ticket de otro servicio, ADR 0030) | 401 antes del upgrade |
 | `room_id` del token ≠ el de la URL | 403 |
 | Redis no responde (revocación, estado de sala o silencios) | 503 (falla cerrado) |
 | Token caducado (firma válida) | upgrade y cierre **4003** |
@@ -81,7 +81,7 @@ El orden de las comprobaciones es el de la tabla: con el token revocado responde
 Mensajes de hasta 64 KiB (`kMaxMessageBytes`); uno mayor cierra la conexión.
 
 ## API REST de moderación
-`PUT` (silenciar) o `DELETE` (levantar) `/api/v1/voice/rooms/{room_id}/mutes/{user_id}` con `Authorization: Bearer <sync-ticket>`. Responde `204` y voice-core anuncia `peer_muted` a la sala. El `user_id` es el `sub` del token del participante (va codificado en la URL: `guest%3A…`).
+`PUT` (silenciar) o `DELETE` (levantar) `/api/v1/voice/rooms/{room_id}/mutes/{user_id}` con `Authorization: Bearer <ticket voice del host>` (o el sync-ticket con la audiencia legada). Responde `204` y voice-core anuncia `peer_muted` a la sala. El `user_id` es el `sub` del token del participante (va codificado en la URL: `guest%3A…`).
 
 | Caso | Respuesta |
 | :--- | :--- |
@@ -95,14 +95,14 @@ Mensajes de hasta 64 KiB (`kMaxMessageBytes`); uno mayor cierra la conexión.
 CORS: `OPTIONS` responde `204` con `Access-Control-Allow-Methods: PUT, DELETE` y `Allow-Headers: Authorization` solo para los orígenes permitidos. Un usuario que no está en la voz también se puede silenciar: entra ya silenciado.
 
 ### Escenario de las salas `live` (ADR 0019)
-`PUT` (invitar) o `DELETE` (retirar) `/api/v1/voice/rooms/{room_id}/stage/{user_id}` con `Authorization: Bearer <sync-ticket>`, mismas reglas de autorización y CORS que los silencios. Los errores van como `{"error":"UPPER_SNAKE"}` (§6.1).
+`PUT` (invitar) o `DELETE` (retirar) `/api/v1/voice/rooms/{room_id}/stage/{user_id}` con `Authorization: Bearer <ticket voice del host>` (o el sync-ticket con la audiencia legada), mismas reglas de autorización y CORS que los silencios. Los errores van como `{"error":"UPPER_SNAKE"}` (§6.1).
 
 | Caso | Respuesta |
 | :--- | :--- |
 | Host o cohost de esa sala, `PUT` | `204`: `SADD room:{id}:voice:stage {user_id}` + `EXPIRE` 24 h (el mismo TTL que `room:{id}:voice:muted`) |
 | Host o cohost de esa sala, `DELETE` | `204`: `SREM` y, si la sala es `live`, cierra con **4009** las conexiones de ese usuario en la sala (los demás reciben `peer_left`). Host y cohost nunca se cierran. En una sala `watch` no se cierra a nadie. |
 | Rol `participant`, token de otra sala u `Origin` fuera de `ALLOWED_ORIGINS` | `403 FORBIDDEN` |
-| Sin `Bearer`, firma inválida, caducado o revocado | `401 UNAUTHORIZED` |
+| Sin `Bearer`, firma inválida, otra audiencia (ADR 0030), caducado o revocado | `401 UNAUTHORIZED` |
 | Ruta mal formada bajo `/api/v1/voice/rooms/` | `404 NOT_FOUND` |
 | Método distinto de `PUT`/`DELETE` | `405 METHOD_NOT_ALLOWED` |
 | Redis no responde (revocación, el SET o, en `DELETE`, `room:{id}:kind`) | `503 UNAVAILABLE` (el reintento es idempotente) |
@@ -121,7 +121,7 @@ CORS: `OPTIONS` responde `204` con `Access-Control-Allow-Methods: PUT, DELETE` y
 ## Estructura
 | Ruta | Rol |
 | :--- | :--- |
-| `src/auth/` | `base64url`, `TokenVerifier` (HS256, `iss`, `aud`, `exp`, rol). |
+| `src/auth/` | `base64url`, `TokenVerifier` (HS256, `iss`, `aud` propia o legada, `exp`, rol). |
 | `src/domain/voice_room` | Membresía y cupo de una sala, sin red. |
 | `src/protocol/messages` | Parseo defensivo de mensajes del cliente y construcción de los del servidor. |
 | `src/moderation/mute_store` | Interfaz `MuteStore` y `can_moderate` (host/cohost). |
@@ -176,7 +176,9 @@ Sanitizers: `-DVOICE_SANITIZE=address` o `-DVOICE_SANITIZE=thread`. Cobertura: `
 | `VOICE_CORE_ADDR` | `0.0.0.0:8085` | `host:puerto` o `:puerto`. |
 | `REDIS_URL` | — (obligatoria) | `redis://[:pass@]host[:port][/db]`. |
 | `JWT_SECRET` | — (obligatoria) | El mismo de identity-api. |
-| `JWT_ISSUER` / `JWT_AUDIENCE` | `tint-identity` / `tint:room` | Iguales a identity-api. |
+| `JWT_ISSUER` | `tint-identity` | Igual a identity-api. |
+| `JWT_AUDIENCE` | `tint:voice` | Audiencia propia de voice-core (ADR 0030): `aud` (string o lista) debe contenerla. Compose le da `tint:voice`. |
+| `JWT_LEGACY_AUDIENCE` | vacío | Transición del ADR 0030: si tiene valor (p. ej. `tint:room`), también se acepta esa audiencia. Vacía = desactivada (falla cerrado). |
 | `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | `host[:puerto]` (en compose viene de `VOICE_ALLOWED_ORIGINS`). |
 | `VOICE_MAX_MEMBERS` | `8` | Cupo de la voz por sala (2–16). |
 | `STUN_URLS` | vacío | Se envían en `ice_servers`. |

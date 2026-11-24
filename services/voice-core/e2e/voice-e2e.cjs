@@ -25,7 +25,7 @@ function token(nick, role = 'participant') {
     nick,
     jti: crypto.randomUUID(),
     iss: process.env.JWT_ISSUER || 'tint-identity',
-    aud: process.env.JWT_AUDIENCE || 'tint:room',
+    aud: process.env.JWT_AUDIENCE || 'tint:voice',
     exp: now + 3600,
   };
   const head = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
