@@ -117,7 +117,7 @@ function StatusBadge({ kpis }: { kpis: RoomKpis }) {
 /**
  * Analítica de una sala para su host (`/rooms/:id/analytics`): KPIs, espectadores en
  * el tiempo, reacciones por emoji y heatmap de reacciones por posición del vídeo.
- * Los datos vienen de la API de lectura de analytics con un analytics-ticket.
+ * Los datos vienen de la API de lectura de analytics con un ticket analytics (ADR 0030).
  */
 export default function RoomAnalytics() {
   const { id = '' } = useParams<{ id: string }>();

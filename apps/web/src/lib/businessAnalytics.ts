@@ -3,7 +3,7 @@
  *
  * Solo agregados: usuarios activos por día, volumen de eventos y KPIs de las salas
  * cerradas. Se protege con una contraseña compartida (ANALYTICS_ADMIN_PASSWORD) que se
- * envía como Bearer; no usa la sesión de host ni el analytics-ticket.
+ * envía como Bearer; no usa la sesión de host ni el ticket analytics.
  */
 import { AnalyticsError, DEFAULT_ANALYTICS_API_URL } from './analytics';
 
