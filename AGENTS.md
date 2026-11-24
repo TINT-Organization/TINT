@@ -44,7 +44,7 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 
 | Contrato | Lados | Fuente de verdad |
 | :--- | :--- | :--- |
-| Claims JWT HS256 (`sub`, `room_id`, `role`, `nick`, `jti`, `iss`, `aud`, `exp`) | identity-api ↔ sync-core, social-core, analytics, voice-core | [usuarios-e-identidad §4](docs/usuarios-e-identidad.md#4-esquemas-de-tokens) |
+| Claims JWT HS256 (`sub`, `room_id`, `role`, `nick`, `jti`, `iss`, `aud`, `exp`); `aud` propia por servicio (`tint:api`, `tint:sync`, `tint:social`, `tint:voice`, `tint:stream`, `tint:analytics`) y legada `JWT_LEGACY_AUDIENCE` solo en la transición ([ADR 0030](docs/adr/0030-tickets-por-servicio-minimo-privilegio.md)) | identity-api ↔ sync-core, social-core, analytics, voice-core | [usuarios-e-identidad §4](docs/usuarios-e-identidad.md#4-esquemas-de-tokens) |
 | `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` | identity-api ↔ sync-core, social-core, analytics, voice-core | `.env.example` raíz |
 | Protocolo del Canal Sync v2 (incl. `VOLUME`/`QUALITY`) | sync-core ↔ web | [sync-core/AGENTS.md](services/sync-core/AGENTS.md#protocolo-del-canal-sync) |
 | Protocolo del Canal Social (chat con spoilers, reacciones, láser, encuestas, trivias, recap; moderación del chat —modo lento y silencio—, láser, encuestas y programación de trivias con sync-ticket del host; `trivia_launch_now`; cierres `4001`/`4003`/`4010` tras el upgrade) y REST `GET /api/v1/social/rooms/{id}/chat` | social-core ↔ web | [social-core/AGENTS.md](services/social-core/AGENTS.md#protocolo-del-canal-social) |
