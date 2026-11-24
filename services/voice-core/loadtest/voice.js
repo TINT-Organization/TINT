@@ -55,7 +55,7 @@ function token(sub, room, secret = SECRET) {
       nick: sub,
       jti: `${sub}-${now}-${Math.random().toString(36).slice(2)}`,
       iss: __ENV.JWT_ISSUER || 'tint-identity',
-      aud: __ENV.JWT_AUDIENCE || 'tint:room',
+      aud: __ENV.JWT_AUDIENCE || 'tint:voice',
       exp: now + 3600,
     }),
   );

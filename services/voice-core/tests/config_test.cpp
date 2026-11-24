@@ -31,7 +31,8 @@ TEST(LoadConfig, UsesDefaults) {
   EXPECT_EQ(cfg->host, "0.0.0.0");
   EXPECT_EQ(cfg->port, 8085);
   EXPECT_EQ(cfg->jwt_issuer, "tint-identity");
-  EXPECT_EQ(cfg->jwt_audience, "tint:room");
+  EXPECT_EQ(cfg->jwt_audience, "tint:voice");
+  EXPECT_EQ(cfg->jwt_legacy_audience, "") << "sin valor, la audiencia legada queda desactivada";
   EXPECT_EQ(cfg->max_members, 8u);
   EXPECT_EQ(cfg->turn_ttl_s, 3600);
   EXPECT_EQ(cfg->allowed_origins, (std::vector<std::string>{"localhost:5173", "127.0.0.1:5173"}));
@@ -42,6 +43,7 @@ TEST(LoadConfig, ReadsEveryVariable) {
   vars["VOICE_CORE_ADDR"] = "127.0.0.1:9000";
   vars["JWT_ISSUER"] = "iss";
   vars["JWT_AUDIENCE"] = "aud";
+  vars["JWT_LEGACY_AUDIENCE"] = "tint:room";
   vars["ALLOWED_ORIGINS"] = "a:1,b:2";
   vars["VOICE_MAX_MEMBERS"] = "4";
   vars["STUN_URLS"] = "stun:x:3478";
@@ -54,6 +56,7 @@ TEST(LoadConfig, ReadsEveryVariable) {
   EXPECT_EQ(cfg->port, 9000);
   EXPECT_EQ(cfg->jwt_issuer, "iss");
   EXPECT_EQ(cfg->jwt_audience, "aud");
+  EXPECT_EQ(cfg->jwt_legacy_audience, "tint:room");
   EXPECT_EQ(cfg->allowed_origins, (std::vector<std::string>{"a:1", "b:2"}));
   EXPECT_EQ(cfg->max_members, 4u);
   EXPECT_EQ(cfg->stun_urls, (std::vector<std::string>{"stun:x:3478"}));
@@ -108,4 +111,12 @@ TEST(LoadConfig, TurnUrlsNeedSecret) {
   auto cfg = load_config(env_of(vars));
   ASSERT_FALSE(cfg.has_value());
   EXPECT_NE(cfg.error().find("TURN_SECRET"), std::string::npos);
+}
+
+TEST(LoadConfig, EmptyLegacyAudienceStaysDisabled) {
+  auto vars = minimal();
+  vars["JWT_LEGACY_AUDIENCE"] = "";
+  auto cfg = load_config(env_of(vars));
+  ASSERT_TRUE(cfg.has_value());
+  EXPECT_TRUE(cfg->jwt_legacy_audience.empty());
 }

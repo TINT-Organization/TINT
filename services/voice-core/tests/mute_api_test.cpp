@@ -93,6 +93,17 @@ TEST_F(MuteApiTest, MissingOrBadTokenGets401) {
   EXPECT_EQ(revocation.calls, 0);
 }
 
+// ADR 0030 (AC1): un ticket de otro servicio no administra la voz.
+TEST_F(MuteApiTest, TicketOfAnotherServiceGets401) {
+  for (const char* aud : {"tint:sync", "tint:stream", "tint:analytics"}) {
+    auto claims = host_claims();
+    claims["aud"] = aud;
+    EXPECT_EQ(status(decide("PUT", kPath, bearer(claims))), 401u) << aud;
+    EXPECT_EQ(status(decide("PUT", "/api/v1/voice/rooms/room-1/stage/guest%3Aana", bearer(claims))), 401u)
+        << aud;
+  }
+}
+
 TEST_F(MuteApiTest, RevokedHostGets401AndRedisDownGets503) {
   revocation.revoke("jti-host");
   EXPECT_EQ(status(decide("PUT", kPath, bearer(host_claims()))), 401u);
