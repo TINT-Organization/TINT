@@ -1,10 +1,10 @@
-import { apiFetch } from './api';
+import { serviceTicketToken } from './serviceTicket';
 import { resolveVoiceWsUrl } from './voiceProtocol';
 
 /**
  * Voz en modo escenario (ADR 0019): en una sala `live` solo entran a voice-core el host y quienes
  * él invita. El host invita o retira con `PUT/DELETE /api/v1/voice/rooms/{id}/stage/{user_id}`
- * (204) usando su sync-ticket; retirar cierra con `4009` la voz de esa persona.
+ * (204) usando su ticket `voice` (ADR 0030); retirar cierra con `4009` la voz de esa persona.
  */
 
 /** Origen HTTP de voice-core: `VITE_VOICE_API_URL` o el del WebSocket de voz (ws→http). */
@@ -40,18 +40,15 @@ export function stageErrorMessage(status: number): string {
   return 'No se pudo cambiar el escenario. Intenta de nuevo en un momento.';
 }
 
-async function hostTicket(roomId: string): Promise<string> {
-  const t = (await apiFetch(`/rooms/${encodeURIComponent(roomId)}/sync-ticket`, { method: 'POST' })) as { token: string };
-  return t.token;
-}
+const hostTicket = (roomId: string) => serviceTicketToken(roomId, 'voice', 'host');
 
 export interface StageOptions {
   baseUrl?: string;
-  fetchHostTicket?: (roomId: string) => Promise<string>;
+  fetchTicket?: (roomId: string) => Promise<string>;
 }
 
 async function stageRequest(method: 'PUT' | 'DELETE', roomId: string, userId: string, opts: StageOptions) {
-  const token = await (opts.fetchHostTicket ?? hostTicket)(roomId);
+  const token = await (opts.fetchTicket ?? hostTicket)(roomId);
   const url = `${resolveVoiceApiUrl(opts.baseUrl)}/api/v1/voice/rooms/${encodeURIComponent(roomId)}/stage/${encodeURIComponent(userId)}`;
   let res: Response;
   try {

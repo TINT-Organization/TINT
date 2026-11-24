@@ -4,6 +4,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { VoiceSection } from './VoiceSection';
 import { MockWebSocket } from '../../test/mockWebSocket';
 import { FakePeerConnection, FakeStream, flushAsync } from '../../test/fakeWebRtc';
+import { echoTicket } from '../../test/serviceTicketMock';
+
+// El invitado pide su ticket voice a identity-api antes de abrir /ws/voice (ADR 0030).
+vi.mock('../../lib/api', async (orig) => ({
+  ...(await orig<typeof import('../../lib/api')>()),
+  apiFetch: vi.fn((...args: Parameters<typeof echoTicket>) => echoTicket(...args)),
+}));
 
 const me = { peer_id: 'p-me', user_id: 'guest:me', nick: 'Yo', role: 'participant', muted: false, host_muted: false };
 const host = { peer_id: 'p-host', user_id: 'u-host', nick: 'Host', role: 'host', muted: false, host_muted: false };
