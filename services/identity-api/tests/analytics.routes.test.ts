@@ -227,12 +227,23 @@ describe('POST /rooms/:id/analytics-ticket', () => {
     const decoded = jwt.verify(res.body.token, env.JWT_SECRET, {
       algorithms: ['HS256'],
       issuer: env.JWT_ISSUER,
-      audience: env.JWT_AUDIENCE,
+      audience: 'tint:analytics',
     }) as any;
     expect(decoded).toMatchObject({ sub: 'host-1', room_id: ROOM_ID, role: 'host', nick: 'Ana Pérez' });
     expect(typeof decoded.jti).toBe('string');
     expect(decoded.exp - decoded.iat).toBe(env.SYNC_TICKET_TTL_SECONDS);
     expect(decoded.exp * 1000).toBe(new Date(res.body.expiresAt).getTime());
+  });
+
+  it('emite la audiencia legada mientras dure la transición (ADR 0030)', async () => {
+    env.JWT_LEGACY_AUDIENCE = 'tint:room';
+    try {
+      const res = await request(app).post(`/api/v1/rooms/${ROOM_ID}/analytics-ticket`).send({});
+      expect(res.status).toBe(200);
+      expect((jwt.decode(res.body.token) as any).aud).toBe('tint:room');
+    } finally {
+      env.JWT_LEGACY_AUDIENCE = undefined;
+    }
   });
 
   it('también emite el ticket si la sala está borrada (sus KPIs se siguen consultando)', async () => {

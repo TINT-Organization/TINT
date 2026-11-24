@@ -42,3 +42,25 @@ describe('parseEnv: modo Firebase Auth Emulator (ADR 0024)', () => {
     expect(parseEnv({ FIREBASE_PROJECT_ID: 'tint-login', NODE_ENV: 'production' }).NODE_ENV).toBe('production');
   });
 });
+
+describe('parseEnv: audiencias por servicio (ADR 0030)', () => {
+  it('la audiencia propia de identity-api es tint:api por defecto', () => {
+    expect(parseEnv({ ...base }).JWT_AUDIENCE).toBe('tint:api');
+  });
+
+  it('JWT_LEGACY_AUDIENCE sin valor o vacía queda desactivada (falla cerrado)', () => {
+    expect(parseEnv({ ...base }).JWT_LEGACY_AUDIENCE).toBeUndefined();
+    expect(parseEnv({ ...base, JWT_LEGACY_AUDIENCE: '' }).JWT_LEGACY_AUDIENCE).toBeUndefined();
+    expect(parseEnv({ ...base, JWT_LEGACY_AUDIENCE: '   ' }).JWT_LEGACY_AUDIENCE).toBeUndefined();
+  });
+
+  it('JWT_LEGACY_AUDIENCE con valor se conserva', () => {
+    expect(parseEnv({ ...base, JWT_LEGACY_AUDIENCE: 'tint:room' }).JWT_LEGACY_AUDIENCE).toBe('tint:room');
+  });
+
+  it('SERVICE_TICKET_TTL_SECONDS vale 600 por defecto y exige un entero positivo', () => {
+    expect(parseEnv({ ...base }).SERVICE_TICKET_TTL_SECONDS).toBe(600);
+    expect(parseEnv({ ...base, SERVICE_TICKET_TTL_SECONDS: '120' }).SERVICE_TICKET_TTL_SECONDS).toBe(120);
+    expect(() => parseEnv({ ...base, SERVICE_TICKET_TTL_SECONDS: '0' })).toThrow();
+  });
+});
