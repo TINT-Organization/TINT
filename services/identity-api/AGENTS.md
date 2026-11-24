@@ -8,7 +8,7 @@ Documentación de referencia: [README del servicio (cómo funciona por dentro)](
 ## Stack Técnico
 - Node.js 22 + TypeScript 5 (ESM) + Express 5. Validación con `zod`.
 - PostgreSQL con Drizzle ORM (`drizzle-kit` para migraciones).
-- Auth del Host: ID tokens de Firebase (RS256) verificados con `jwks-rsa` + `jsonwebtoken` (`src/modules/auth/firebaseToken.ts`). Solo en desarrollo, con `FIREBASE_AUTH_EMULATOR_HOST`, también los tokens sin firma (`alg: none`) del Firebase Auth Emulator ([ADR 0024](../../docs/adr/0024-login-local-con-firebase-auth-emulator.md)). Sin dependencias nuevas.
+- Auth del Host: ID tokens de Firebase (RS256) verificados con `jwks-rsa` + `jsonwebtoken` (`src/modules/auth/firebaseToken.ts`); el JWKS de Google se cachea 6 h, con timeout de 5 s, reintentos y la última clave buena como respaldo acotado a 24 h (`jwks.ts`; falla cerrado ante un `kid` desconocido). Solo en desarrollo, con `FIREBASE_AUTH_EMULATOR_HOST`, también los tokens sin firma (`alg: none`) del Firebase Auth Emulator ([ADR 0024](../../docs/adr/0024-login-local-con-firebase-auth-emulator.md)). Sin dependencias nuevas.
 - Tokens propios: `jsonwebtoken` HS256 con `JWT_SECRET`.
 - Redis (`ioredis`): revocación de tokens y aviso a sync-core.
 - MinIO/S3 (`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`): URLs GET y PUT pre-firmadas, calculadas en local, `HEAD` para confirmar subidas (y su tamaño real) y `DeleteObject` para descartar las que superan el límite.
