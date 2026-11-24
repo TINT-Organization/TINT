@@ -93,7 +93,7 @@ def load_label(label_dir: Path) -> dict[str, dict[str, float]]:
     return aggregate(runs)
 
 
-LEVEL_TAG = re.compile(r"^(?P<metric>[a-z_]+)\{(?P<tags>[^}]*)\}$")
+LEVEL_TAG = re.compile(r"^(?P<metric>[a-z0-9_]+)\{(?P<tags>[^}]*)\}$")
 
 
 def level_curve(data: dict, hold_s: float, tag: str | None = None) -> list[dict]:

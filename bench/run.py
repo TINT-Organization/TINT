@@ -221,7 +221,17 @@ def wait_ready(ctx: Ctx, timeout: int = 360) -> None:
 
 def reset(ctx: Ctx) -> None:
     compose(ctx, "down -v --remove-orphans")
-    compose(ctx, "up -d --no-build")
+    try:
+        compose(ctx, "up -d --no-build")
+    except RuntimeError as err:
+        # Con 2 réplicas de identity-api (ADR 0032) ambas migran a la vez sobre la BD vacía y una puede
+        # salir con error y quedar "unhealthy" hasta que Docker la reinicia: `up` falla aunque el stack
+        # se recupere solo. Se anota y se reintenta una vez; un segundo fallo sí aborta.
+        RESULTS.mkdir(parents=True, exist_ok=True)
+        with (RESULTS / "_up_reintentos.log").open("a") as log:
+            log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {ctx.project}: {str(err).splitlines()[-1][:300]}\n")
+        time.sleep(10)
+        compose(ctx, "up -d --no-build")
     wait_ready(ctx)
     time.sleep(20)
 

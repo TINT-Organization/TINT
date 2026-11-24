@@ -65,7 +65,7 @@ def summary(before: Path, after: Path, hold_s: float = 30.0) -> tuple[str, dict,
     return "\n".join(rows) + "\n", cb, ca
 
 
-def plot(cb: dict, ca: dict, out: Path, names: list[str]) -> None:
+def plot(cb: dict, ca: dict, out: Path, names: list[str], after_label: str = "después (E4)") -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -74,7 +74,7 @@ def plot(cb: dict, ca: dict, out: Path, names: list[str]) -> None:
     fig, axes = plt.subplots(2, len(names), figsize=(3.6 * len(names), 6.4), sharex=True)
     for col, name in enumerate(names):
         lat, thr = axes[0][col], axes[1][col]
-        for curves, label, color, style in ((cb, "antes (7362449)", "#6b7280", "--"), (ca, "después (E4)", "#2563eb", "-")):
+        for curves, label, color, style in ((cb, "antes (7362449)", "#6b7280", "--"), (ca, after_label, "#2563eb", "-")):
             curve = curves.get(name)
             if not curve:
                 continue
@@ -92,14 +92,18 @@ def plot(cb: dict, ca: dict, out: Path, names: list[str]) -> None:
     axes[0][0].set_ylabel("p95 (ms)")
     axes[1][0].set_ylabel("req/s en la meseta (× = con fallos)")
     axes[0][0].legend(fontsize=8)
-    fig.suptitle("Laboratorio 6: antes (2026-11-16, 7362449) vs. después (E4)")
+    fig.suptitle(f"Laboratorio 6: antes (2026-11-16, 7362449) vs. {after_label}")
     fig.tight_layout()
     fig.savefig(out, dpi=130)
     plt.close(fig)
 
 
 def main(argv: list[str]) -> int:
-    png = None
+    png, after_label = None, "después (E4)"
+    if "--after-label" in argv:
+        i = argv.index("--after-label")
+        after_label = argv[i + 1]
+        argv = argv[:i] + argv[i + 2:]
     if "--png" in argv:
         i = argv.index("--png")
         png = Path(argv[i + 1])
@@ -110,7 +114,7 @@ def main(argv: list[str]) -> int:
     table, cb, ca = summary(Path(argv[0]), Path(argv[1]))
     print(table)
     if png:
-        plot(cb, ca, png, [n for n in ORDER if n in cb or n in ca])
+        plot(cb, ca, png, [n for n in ORDER if n in ca], after_label)
         print(f"gráfica: {png}")
     return 0
 
