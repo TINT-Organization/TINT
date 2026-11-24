@@ -16,6 +16,31 @@
         dial_timeout 5s
         response_header_timeout 5s
     }
+    # Resiliencia (ADR 0032): tras 3 fallos en 10 s el upstream sale de rotación y se responde 503
+    # al instante en vez de esperar timeouts (corta la cascada hacia un servicio caído).
+    fail_duration 10s
+    max_fails 3
+    unhealthy_status 502 503 504
+}
+
+# identity-api con réplicas (ADR 0032): Docker DNS devuelve una IP por réplica; Caddy las reparte
+# por menor número de conexiones y, si una falla, reintenta la petición en otra durante 8 s.
+(identity_upstream) {
+    dynamic a {$IDENTITY_API_HOST:identity-api} {$IDENTITY_API_PORT:8081} {
+        refresh 5s
+    }
+    lb_policy least_conn
+    # Mayor que response_header_timeout (5 s): un GET que se cuelga en una réplica que se apaga
+    # aún tiene tiempo de reintentarse en otra (medido: sin esto, 1 de 400 peticiones daba 503).
+    lb_try_duration 8s
+    lb_try_interval 250ms
+    fail_duration 10s
+    max_fails 3
+    unhealthy_status 5xx
+    transport http {
+        dial_timeout 5s
+        response_header_timeout 5s
+    }
 }
 
 http://:8080 {
@@ -95,10 +120,10 @@ http://:8080 {
             }
         }
 
-        forward_auth @protected {$IDENTITY_API_UPSTREAM:identity-api:8081} {
+        forward_auth @protected {
             uri /api/v1/internal/auth/check
             copy_headers X-User-Id X-User-Sub X-User-Role X-User-Room-Id X-User-Nick
-            import service_timeout
+            import identity_upstream
         }
 
         # Rutas con sesión: por usuario verificado. /ws/* queda fuera (cada canal limita sus mensajes).
@@ -142,8 +167,8 @@ http://:8080 {
     }
 
     @identity path /api/*
-    reverse_proxy @identity {$IDENTITY_API_UPSTREAM:identity-api:8081} {
-        import service_timeout
+    reverse_proxy @identity {
+        import identity_upstream
     }
 
     @sync path /ws/sync /ws/sync/*

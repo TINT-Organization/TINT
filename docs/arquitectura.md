@@ -604,7 +604,7 @@ Todo lo demás pasa a `gateway` (Caddy, HTTP `:8080` interno), que mantiene el c
 
 | Ruta pública | Servicio | Upstream configurable |
 | :--- | :--- | :--- |
-| `/api/*` (excepto analytics y voz) | identity-api | `IDENTITY_API_UPSTREAM` |
+| `/api/*` (excepto analytics y voz) | identity-api | `IDENTITY_API_HOST` + `IDENTITY_API_PORT` (réplicas balanceadas, ADR 0032) |
 | `/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline` | analytics | `ANALYTICS_UPSTREAM` |
 | `/api/v1/voice/*` | voice-core | `VOICE_CORE_UPSTREAM` |
 | `/api/v1/stream/*` | stream-core | `STREAM_CORE_UPSTREAM` |
