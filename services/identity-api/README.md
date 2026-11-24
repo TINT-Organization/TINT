@@ -96,7 +96,7 @@ flowchart LR
 | Validación | `validate(schema)` con zod: 400 con `details` | `src/middlewares/validate.ts` |
 | Errores | Último manejador: nunca filtra detalles internos | `src/middlewares/error.ts` |
 | Tokens | `issueGuestToken` y `generateHostTicket` (HS256) | `src/modules/auth/auth.service.ts` |
-| JWKS | Claves públicas de Firebase por `kid` (caché, 5 peticiones/min) | `src/modules/auth/jwks.ts` |
+| JWKS | Claves públicas de Firebase por `kid`: caché de 6 h, timeout de 5 s, 3 intentos ante fallos de red y, si Google no responde, la última clave buena (máx. 24 h); un `kid` desconocido se rechaza | `src/modules/auth/jwks.ts` |
 | Revocación | `token:revoked:{jti}` y evento `REVOKED`; cliente Redis compartido | `src/modules/tokens/revocation.ts` |
 | Medios | Firma GET/PUT (endpoint público), `HEAD`/`DELETE` (endpoint interno), `XADD media:uploads` | `src/modules/media/media.signer.ts`, `media.store.ts`, `media.queue.ts` |
 | Analítica | `publishAnalyticsEvent`: `XADD analytics:events MAXLEN ~ 100000` que nunca rechaza | `src/modules/analytics/analytics.events.ts` |
