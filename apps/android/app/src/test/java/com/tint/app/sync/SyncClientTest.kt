@@ -1,5 +1,7 @@
 package com.tint.app.sync
 
+import com.tint.app.net.ApiError
+import com.tint.app.net.TicketRejected
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.json.Json
@@ -29,7 +31,9 @@ class SyncClientTest {
 
     private val sockets = mutableListOf<FakeSocket>()
     private val sleeps = mutableListOf<Long>()
+    /** Ticket `sync` que devuelve identity-api (ADR 0030) y fallos que se lanzan antes, uno por pedido. */
     private var token: String? = "guest-jwt"
+    private val ticketErrors = ArrayDeque<Exception>()
     private var clock = 1_000L
     private var localPosition: Long? = 4_321L
     private var ids = 0
@@ -39,7 +43,10 @@ class SyncClientTest {
     fun setUp() {
         client = SyncClient(
             roomId = "r1",
-            token = { token },
+            token = {
+                ticketErrors.removeFirstOrNull()?.let { throw it }
+                token
+            },
             urlFor = { room, t -> "ws://h/ws/sync?room_id=$room&token=$t" },
             sockets = SyncSocketFactory { url, listener -> FakeSocket(url, listener).also { sockets += it } },
             scope = CoroutineScope(Dispatchers.Unconfined),
@@ -269,14 +276,70 @@ class SyncClientTest {
     }
 
     @Test
-    fun `cierre 4003 marca expirado y no reconecta`() {
+    fun `cierre 4003 pide otro ticket enseguida una vez y el segundo seguido es terminal`() {
         val socket = open()
+        token = "ticket-2"
 
         socket.listener.onClosed(SyncProtocol.CLOSE_EXPIRED)
 
-        assertTrue(client.state.value.expired)
-        assertEquals(1, sockets.size)
+        assertFalse(client.state.value.expired)
+        assertEquals(2, sockets.size)
+        assertEquals("ws://h/ws/sync?room_id=r1&token=ticket-2", sockets.last().url)
         assertEquals(emptyList<Long>(), sleeps)
+
+        sockets.last().listener.onOpen()
+        sockets.last().listener.onClosed(SyncProtocol.CLOSE_EXPIRED)
+
+        assertTrue(client.state.value.expired)
+        assertEquals(2, sockets.size)
+        assertEquals(emptyList<Long>(), sleeps)
+    }
+
+    @Test
+    fun `el reintento por 4003 se rearma al recibir un STATE`() {
+        open().listener.onClosed(SyncProtocol.CLOSE_EXPIRED)
+        sockets.last().listener.onOpen()
+        sockets.last().listener.onMessage(stateFrame(1))
+
+        sockets.last().listener.onClosed(SyncProtocol.CLOSE_EXPIRED)
+
+        assertFalse(client.state.value.expired)
+        assertEquals(3, sockets.size)
+    }
+
+    @Test
+    fun `ticket rechazado por identity-api cierra como su codigo sin abrir el socket`() {
+        ticketErrors += TicketRejected(SyncProtocol.CLOSE_REVOKED, "Forbidden")
+
+        client.start()
+
+        assertTrue(client.state.value.revoked)
+        assertEquals(0, sockets.size)
+        assertEquals(emptyList<Long>(), sleeps)
+    }
+
+    @Test
+    fun `sesion del invitado caducada al pedir el ticket marca expirado sin reintentar`() {
+        ticketErrors += TicketRejected(SyncProtocol.CLOSE_EXPIRED, "Invalid token")
+
+        client.start()
+
+        assertTrue(client.state.value.expired)
+        assertEquals(0, sockets.size)
+        assertEquals(emptyList<Long>(), sleeps)
+    }
+
+    @Test
+    fun `un fallo transitorio al pedir el ticket reintenta con backoff`() {
+        ticketErrors += ApiError(503, "x")
+        ticketErrors += ApiError(0, "sin red")
+
+        client.start()
+
+        assertEquals(listOf(500L, 1000L), sleeps)
+        assertEquals(1, sockets.size)
+        assertFalse(client.state.value.expired)
+        assertFalse(client.state.value.revoked)
     }
 
     @Test

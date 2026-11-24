@@ -71,7 +71,7 @@ data class VoiceUiState(
  */
 class VoiceClient(
     private val roomId: String,
-    token: () -> String?,
+    token: suspend () -> String?,
     urlFor: (roomId: String, token: String) -> String,
     sockets: SyncSocketFactory,
     private val meshes: VoiceMeshFactory,
@@ -189,6 +189,8 @@ class VoiceClient(
     }
 
     private fun onVoiceState(msg: VoiceMessage.VoiceState) {
+        // Estado válido: el próximo corte vuelve a empezar el backoff y un 4003 puede pedir otro ticket.
+        connection.resetBackoff()
         closeMesh()
         selfId = msg.self.peerId
         hostMuted = msg.self.hostMuted

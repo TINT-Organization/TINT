@@ -66,6 +66,7 @@ import com.tint.app.join.JoinedRoom
 import com.tint.app.layout.RoomLayout
 import com.tint.app.layout.VideoEnd
 import com.tint.app.layout.VideoTime
+import com.tint.app.net.TicketService
 import com.tint.app.net.TokenClaims
 import com.tint.app.social.SocialClient
 import com.tint.app.sync.ExoPlayerPort
@@ -92,7 +93,7 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
     val sync = remember(room.roomId) {
         SyncClient(
             roomId = room.roomId,
-            token = { container.tokens.guestToken },
+            token = { container.tickets.token(room.roomId, TicketService.SYNC) },
             urlFor = container.endpoints::syncUrl,
             sockets = OkHttpSyncSocketFactory(container.http),
             scope = scope,
@@ -103,7 +104,7 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
     val social = remember(room.roomId) {
         SocialClient(
             roomId = room.roomId,
-            token = { container.tokens.guestToken },
+            token = { container.tickets.token(room.roomId, TicketService.SOCIAL) },
             urlFor = container.endpoints::socialUrl,
             sockets = OkHttpSyncSocketFactory(container.http),
             scope = scope,

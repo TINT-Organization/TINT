@@ -68,7 +68,7 @@ data class SocialUiState(
  */
 class SocialClient(
     private val roomId: String,
-    token: () -> String?,
+    token: suspend () -> String?,
     urlFor: (roomId: String, token: String) -> String,
     sockets: SyncSocketFactory,
     scope: CoroutineScope,
@@ -111,7 +111,7 @@ class SocialClient(
                     it.copy(
                         connected = false,
                         revoked = it.revoked || code == SyncProtocol.CLOSE_REVOKED,
-                        expired = it.expired || code == SyncProtocol.CLOSE_EXPIRED,
+                        expired = it.expired || (code == SyncProtocol.CLOSE_EXPIRED && reconnectAttempt == null),
                         roomClosed = it.roomClosed || code == SyncProtocol.CLOSE_ROOM_CLOSED,
                         reconnectAttempt = reconnectAttempt ?: it.reconnectAttempt,
                     )
