@@ -5,8 +5,12 @@
 services:
   env-check:
     container_name: !reset null
+  reverse-proxy:
+    container_name: !reset null
+    image: tint-monorepo-reverse-proxy:${BENCH_IMAGE_TAG:-latest}
   gateway:
     container_name: !reset null
+    image: tint-monorepo-gateway:${BENCH_IMAGE_TAG:-latest}
   web:
     container_name: !reset null
     image: tint-monorepo-web:${BENCH_IMAGE_TAG:-latest}
@@ -36,6 +40,8 @@ services:
   identity-api:
     container_name: !reset null
     image: tint-monorepo-identity-api:${BENCH_IMAGE_TAG:-latest}
+  identity-migrate:
+    image: tint-monorepo-identity-migrate:${BENCH_IMAGE_TAG:-latest}
   voice-core:
     container_name: !reset null
     image: tint-monorepo-voice-core:${BENCH_IMAGE_TAG:-latest}
