@@ -26,6 +26,15 @@ function routeFetch(input: RequestInfo | URL, init?: RequestInit) {
   const url = String(input);
   const method = (init?.method ?? 'GET').toUpperCase();
   if (method === 'DELETE') return Promise.resolve(fakeResponse({ status: 200 }));
+  if (url.includes('/tickets/stream')) {
+    // identity-api (ADR 0030): el invitado canjea su guest token por un ticket stream.
+    const auth = new Headers(init?.headers).get('Authorization');
+    return Promise.resolve(
+      auth === 'Bearer g'
+        ? fakeResponse({ status: 200, json: { token: 'stream-g', expires_at: 'x', audience: 'tint:stream' } })
+        : fakeResponse({ status: 401, json: { error: 'Unauthorized' } }),
+    );
+  }
   if (url.includes('/ice-servers')) return Promise.resolve(responses.ice());
   if (url.includes('/whip?kind=video')) return Promise.resolve(responses['whip:video']());
   if (url.includes('/whip?kind=audio')) return Promise.resolve(responses['whip:audio']());
@@ -40,7 +49,7 @@ const calls = (fragment: string, method = 'POST') =>
 
 const hostOpts = (extra: Partial<UseLiveStreamOptions> = {}): UseLiveStreamOptions => ({
   role: 'host',
-  fetchHostTicket: async () => 'host-ticket',
+  fetchTicket: async () => 'host-ticket',
   reconnectBaseMs: 100,
   ...extra,
 });
@@ -123,11 +132,11 @@ describe('host', () => {
 
   it('el ticket con 410 Disabled termina; con 403 es FORBIDDEN_ROLE', async () => {
     const a = renderHook(() =>
-      useLiveStream('r1', hostOpts({ fetchHostTicket: () => Promise.reject(new ApiError(410, 'Disabled', { error: 'Disabled' })) })),
+      useLiveStream('r1', hostOpts({ fetchTicket: () => Promise.reject(new ApiError(410, 'Disabled', { error: 'Disabled' })) })),
     );
     await run(() => a.result.current.publish());
     expect(a.result.current.status).toBe('ended');
-    const b = renderHook(() => useLiveStream('r1', hostOpts({ fetchHostTicket: () => Promise.reject(new ApiError(403, 'Forbidden')) })));
+    const b = renderHook(() => useLiveStream('r1', hostOpts({ fetchTicket: () => Promise.reject(new ApiError(403, 'Forbidden')) })));
     await run(() => b.result.current.publish());
     expect(b.result.current.error?.code).toBe('FORBIDDEN_ROLE');
     expect(screenVideo.stopped).toBe(true);
@@ -295,6 +304,38 @@ describe('host', () => {
 
 describe('viewer', () => {
   beforeEach(() => localStorage.setItem('tint_guest_token', 'g'));
+
+  it('el viewer usa su ticket stream, no el guest token', async () => {
+    const { result } = renderHook(() => useLiveStream('r1', { role: 'guest' }));
+    await run(() => result.current.watch());
+    const whep = calls('/whep');
+    expect(new Headers((whep[0][1] as RequestInit).headers).get('Authorization')).toBe('Bearer stream-g');
+  });
+
+  it('un fallo de red al pedir el ticket reintenta; un 5xx también', async () => {
+    vi.useFakeTimers();
+    const tickets = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new ApiError(503, 'Unavailable'))
+      .mockResolvedValue('stream-ok');
+    const { result } = renderHook(() => useLiveStream('r1', { role: 'guest', fetchTicket: tickets, reconnectBaseMs: 100 }));
+    await run(() => result.current.watch());
+    expect(result.current.status).toBe('reconnecting');
+    expect(result.current.error?.code).toBe('NETWORK');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(result.current.error?.code).toBe('UNAVAILABLE');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+      await flushLive();
+    });
+    expect(tickets).toHaveBeenCalledTimes(3);
+    expect(tickets).toHaveBeenLastCalledWith('r1', 'guest');
+    expect(calls('/whep')).toHaveLength(1);
+    vi.useRealTimers();
+  });
 
   it('sin guest token: UNAUTHORIZED', async () => {
     localStorage.clear();

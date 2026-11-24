@@ -106,7 +106,9 @@ beforeEach(() => {
   mockedApiFetch.mockImplementation(((path: string) =>
     path.endsWith('/playback')
       ? Promise.resolve({ mediaId: 'm1', url: 'https://minio/m1?sig=1', expiresAt: '2099-01-01T00:00:00Z' })
-      : Promise.reject(new Error(`ruta no simulada ${path}`))) as typeof apiFetch);
+      : path.includes('/tickets/')
+        ? Promise.resolve({ token: 'ticket', expires_at: 'x', audience: 'tint:test' })
+        : Promise.reject(new Error(`ruta no simulada ${path}`))) as typeof apiFetch);
   playerRenders.count = 0;
 });
 

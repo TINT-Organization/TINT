@@ -1,6 +1,12 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LASER_STREAM_LIMIT, useSocialSocket } from './useSocialSocket';
+import { echoTicket, flushTicket } from '../test/serviceTicketMock';
+
+vi.mock('../lib/api', async (orig) => ({
+  ...(await orig<typeof import('../lib/api')>()),
+  apiFetch: vi.fn((...args: Parameters<typeof echoTicket>) => echoTicket(...args)),
+}));
 
 class FakeSocket {
   static instances: FakeSocket[] = [];
@@ -35,10 +41,11 @@ class FakeSocket {
   }
 }
 
-function connected() {
+async function connected() {
   const hook = renderHook(() =>
     useSocialSocket('r1', { createSocket: (url) => new FakeSocket(url) as unknown as WebSocket }),
   );
+  await flushTicket();
   const ws = FakeSocket.instances[FakeSocket.instances.length - 1];
   act(() => ws.open());
   return { ...hook, ws };
@@ -62,8 +69,8 @@ beforeEach(() => {
 });
 
 describe('useSocialSocket — puntero láser', () => {
-  it('acumula los puntos recibidos con tope', () => {
-    const { result, ws } = connected();
+  it('acumula los puntos recibidos con tope', async () => {
+    const { result, ws } = await connected();
     expect(result.current.laser).toEqual([]);
     act(() => {
       for (let i = 0; i < LASER_STREAM_LIMIT + 5; i += 1) ws.receive(laser(`e${i}`, { x: i / 100 }));
@@ -72,8 +79,8 @@ describe('useSocialSocket — puntero láser', () => {
     expect(result.current.laser[LASER_STREAM_LIMIT - 1]).toMatchObject({ event_id: `e${LASER_STREAM_LIMIT + 4}` });
   });
 
-  it('sendLaser envía laser_point, lo pinta al instante y traga el eco', () => {
-    const { result, ws } = connected();
+  it('sendLaser envía laser_point, lo pinta al instante y traga el eco', async () => {
+    const { result, ws } = await connected();
     let ok = false;
     act(() => {
       ok = result.current.sendLaser(0.25, 0.75);
@@ -87,8 +94,8 @@ describe('useSocialSocket — puntero láser', () => {
     expect(result.current.laser).toHaveLength(1);
   });
 
-  it('sendLaser con end marca el final del trazo', () => {
-    const { result, ws } = connected();
+  it('sendLaser con end marca el final del trazo', async () => {
+    const { result, ws } = await connected();
     act(() => {
       result.current.sendLaser(0.1, 0.2, true);
     });
@@ -96,10 +103,11 @@ describe('useSocialSocket — puntero láser', () => {
     expect(result.current.laser[0].end).toBe(true);
   });
 
-  it('sendLaser con el socket cerrado no envía', () => {
+  it('sendLaser con el socket cerrado no envía', async () => {
     const { result } = renderHook(() =>
       useSocialSocket('r1', { createSocket: (url) => new FakeSocket(url) as unknown as WebSocket }),
     );
+    await flushTicket();
     expect(result.current.sendLaser(0.5, 0.5)).toBe(false);
     expect(result.current.laser).toEqual([]);
   });
@@ -117,8 +125,8 @@ const pollState = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('useSocialSocket — encuestas', () => {
-  it('createPoll envía poll_create y limpia el último error', () => {
-    const { result, ws } = connected();
+  it('createPoll envía poll_create y limpia el último error', async () => {
+    const { result, ws } = await connected();
     act(() => ws.receive({ type: 'error', code: 'POLL_ACTIVE', event_id_ref: 'x' }));
     expect(result.current.lastError).toEqual({ code: 'POLL_ACTIVE', event_id_ref: 'x' });
     let ok = false;
@@ -130,14 +138,14 @@ describe('useSocialSocket — encuestas', () => {
     expect(result.current.lastError).toBeNull();
   });
 
-  it('createPoll pre-valida el borrador', () => {
-    const { result, ws } = connected();
+  it('createPoll pre-valida el borrador', async () => {
+    const { result, ws } = await connected();
     expect(result.current.createPoll('', ['a', 'b'], 60)).toBe(false);
     expect(ws.sent).toHaveLength(0);
   });
 
-  it('expone poll_state y recuerda el voto propio si el servidor no lo envía', () => {
-    const { result, ws } = connected();
+  it('expone poll_state y recuerda el voto propio si el servidor no lo envía', async () => {
+    const { result, ws } = await connected();
     expect(result.current.poll).toBeNull();
     act(() => ws.receive(pollState()));
     expect(result.current.poll).toMatchObject({ poll_id: 'p1', my_vote: null });
@@ -156,25 +164,26 @@ describe('useSocialSocket — encuestas', () => {
     expect(result.current.poll?.my_vote).toBeNull();
   });
 
-  it('closePoll envía poll_close', () => {
-    const { result, ws } = connected();
+  it('closePoll envía poll_close', async () => {
+    const { result, ws } = await connected();
     act(() => {
       result.current.closePoll('p1');
     });
     expect(ws.sentJson()[0]).toMatchObject({ type: 'poll_close', poll_id: 'p1' });
   });
 
-  it('las acciones con el socket cerrado devuelven false', () => {
+  it('las acciones con el socket cerrado devuelven false', async () => {
     const { result } = renderHook(() =>
       useSocialSocket('r1', { createSocket: (url) => new FakeSocket(url) as unknown as WebSocket }),
     );
+    await flushTicket();
     expect(result.current.createPoll('¿?', ['a', 'b'], 60)).toBe(false);
     expect(result.current.votePoll('p1', 0)).toBe(false);
     expect(result.current.closePoll('p1')).toBe(false);
   });
 
-  it('un error sin event_id_ref también se expone', () => {
-    const { result, ws } = connected();
+  it('un error sin event_id_ref también se expone', async () => {
+    const { result, ws } = await connected();
     act(() => ws.receive({ type: 'error', code: 'FORBIDDEN' }));
     expect(result.current.lastError).toEqual({ code: 'FORBIDDEN', event_id_ref: undefined });
   });
@@ -190,8 +199,8 @@ describe('useSocialSocket — recap', () => {
     totals: { reactions: 40, pauses: 5, rewinds: 2, polls: 1 },
   };
 
-  it('requestRecap envía recap_request y expone el recap recibido', () => {
-    const { result, ws } = connected();
+  it('requestRecap envía recap_request y expone el recap recibido', async () => {
+    const { result, ws } = await connected();
     expect(result.current.recap).toBeNull();
     let ok = false;
     act(() => {
@@ -203,10 +212,11 @@ describe('useSocialSocket — recap', () => {
     expect(result.current.recap).toMatchObject({ top_emoji_user: { nick: 'Ana' }, totals: { reactions: 40 } });
   });
 
-  it('requestRecap con el socket cerrado devuelve false', () => {
+  it('requestRecap con el socket cerrado devuelve false', async () => {
     const { result } = renderHook(() =>
       useSocialSocket('r1', { createSocket: (url) => new FakeSocket(url) as unknown as WebSocket }),
     );
+    await flushTicket();
     expect(result.current.requestRecap()).toBe(false);
   });
 });

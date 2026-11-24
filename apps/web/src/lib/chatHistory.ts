@@ -1,15 +1,13 @@
-import { apiFetch } from './api';
-import { getAnalyticsTicket } from './analytics';
-import { isRoomDisabledError } from './roomClosed';
+import { serviceTicketToken } from './serviceTicket';
 import { parseSocialMessage, type ChatMessage } from './socialSocket';
 
 /**
  * Historial del chat de una sala (HU-LIVE-09 AC3): `GET /api/v1/social/rooms/{id}/chat` en
  * social-core, también con la sala deshabilitada (mientras duren las claves de Redis: 12 h).
  *
- * Credencial: el sync-ticket del host (HS256, `role: host`, `room_id`), que identity-api emite
- * también con la sala `disabled`. Respaldo para una identity-api anterior que aún responda
- * `410 Disabled` al sync-ticket: el `analytics-ticket`, que sale del mismo generador.
+ * Credencial: el ticket `social` del host (ADR 0030; HS256, `aud = tint:social`, `role: host`),
+ * que identity-api emite también con la sala `disabled`. Ya no hay respaldo con otro ticket:
+ * social-core solo acepta su audiencia.
  */
 
 /** Origen HTTP de social-core: el de `VITE_SOCIAL_WS_URL` (ws→http, wss→https). */
@@ -44,18 +42,12 @@ export function chatHistoryErrorMessage(status: number): string {
 
 export interface ChatHistoryOptions {
   baseUrl?: string;
-  /** Ticket HS256 de host de la sala (por defecto, el sync-ticket). */
+  /** Ticket HS256 de host de la sala (por defecto, el ticket `social`). */
   fetchTicket?: (roomId: string) => Promise<string>;
 }
 
-export async function hostHistoryTicket(roomId: string): Promise<string> {
-  try {
-    const t = (await apiFetch(`/rooms/${encodeURIComponent(roomId)}/sync-ticket`, { method: 'POST' })) as { token: string };
-    return t.token;
-  } catch (err) {
-    if (!isRoomDisabledError(err)) throw err;
-    return (await getAnalyticsTicket(roomId)).token;
-  }
+export function hostHistoryTicket(roomId: string): Promise<string> {
+  return serviceTicketToken(roomId, 'social', 'host');
 }
 
 const defaultTicket = hostHistoryTicket;

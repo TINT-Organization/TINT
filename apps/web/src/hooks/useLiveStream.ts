@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
 import { isRoomDisabledError } from '../lib/roomClosed';
+import { serviceTicketToken } from '../lib/serviceTicket';
 import { AudioMixer, MIXER_SOURCES, type MixerSourceId } from '../lib/audioMixer';
 import { canComposite, SceneCompositor } from '../lib/sceneCompositor';
 import {
@@ -33,9 +33,12 @@ import {
  * - **Host** (`publish`): captura la pantalla (con audio del sistema), la compone en un canvas
  *   (cámara opcional en PiP y escenas) y publica dos sesiones WHIP: `?kind=video` (VP8 simulcast
  *   h/m/l + DataChannel `stream-events`) y `?kind=audio` (la mezcla del `AudioMixer`, Opus
- *   estéreo). Credencial: un sync-ticket de identity-api.
- * - **Viewer** (`watch`): una sesión WHEP `recvonly` (vídeo + audio + DataChannel) con el guest
- *   token. Si la PeerConnection se cae y el stream sigue, reconecta con espera creciente.
+ *   estéreo).
+ * - **Viewer** (`watch`): una sesión WHEP `recvonly` (vídeo + audio + DataChannel). Si la
+ *   PeerConnection se cae y el stream sigue, reconecta con espera creciente.
+ *
+ * Credencial (ADR 0030): un ticket `stream` de identity-api en cada intento, pedido con el ID token
+ * de Firebase (host) o con el guest token (viewer), que ya no viaja a stream-core.
  *
  * El estado lo dicta el servidor por el DataChannel (`stream_state`, `viewer_count`, `scene`,
  * `host_stats`). `ended` (por `stream_state` o `410 ROOM_DISABLED`) es terminal.
@@ -67,8 +70,8 @@ export interface UseLiveStreamOptions {
   title?: string;
   /** Origen de la API (por defecto `VITE_STREAM_API_URL`). */
   baseUrl?: string;
-  /** Inyectable para pruebas: sync-ticket del host. */
-  fetchHostTicket?: (roomId: string) => Promise<string>;
+  /** Inyectable para pruebas: ticket `stream` de identity-api. */
+  fetchTicket?: (roomId: string, role: 'host' | 'guest') => Promise<string>;
   /** Espera base de la reconexión (se duplica hasta `reconnectMaxMs`). */
   reconnectBaseMs?: number;
   reconnectMaxMs?: number;
@@ -107,19 +110,40 @@ const EMPTY_MIXER: MixerView = {
   stage: { available: false, gain: 1, muted: false },
 };
 
-async function defaultHostTicket(roomId: string): Promise<string> {
-  const ticket = (await apiFetch(`/rooms/${encodeURIComponent(roomId)}/sync-ticket`, { method: 'POST' })) as {
-    token: string;
-  };
-  return ticket.token;
-}
+const defaultTicket = (roomId: string, role: 'host' | 'guest') => serviceTicketToken(roomId, 'stream', role);
 
 function toLiveError(err: unknown): LiveError {
   if (err instanceof StreamError) return { code: err.code, message: err.message };
   if (isRoomDisabledError(err)) return { code: 'ROOM_DISABLED', message: streamErrorMessage('ROOM_DISABLED') };
   const status = errorStatus(err);
-  const code = status === 403 ? 'FORBIDDEN_ROLE' : status === 404 || status === 410 ? 'STREAM_NOT_FOUND' : 'UNAVAILABLE';
+  const code =
+    status === 401
+      ? 'UNAUTHORIZED'
+      : status === 403
+        ? 'FORBIDDEN_ROLE'
+        : status === 404 || status === 410
+          ? 'STREAM_NOT_FOUND'
+          : 'UNAVAILABLE';
   return { code, message: streamErrorMessage(code) };
+}
+
+/**
+ * Pide el ticket `stream`. Un fallo transitorio (red, 5xx, 429) sale como `StreamError` no
+ * terminal para que el viewer reintente; los rechazos (401/403/404/410) quedan tal cual.
+ */
+async function requestTicket(
+  fetchTicket: (roomId: string, role: 'host' | 'guest') => Promise<string>,
+  roomId: string,
+  role: 'host' | 'guest',
+): Promise<string> {
+  try {
+    return await fetchTicket(roomId, role);
+  } catch (err) {
+    const status = errorStatus(err);
+    if (status === null) throw new StreamError(0, 'NETWORK', streamErrorMessage('NETWORK'));
+    if (status >= 500 || status === 429) throw new StreamError(status, 'UNAVAILABLE', streamErrorMessage('UNAVAILABLE'));
+    throw err;
+  }
 }
 
 function supportsLocalPlaybackSuppression(): boolean {
@@ -221,13 +245,8 @@ export function useLiveStream(roomId: string | undefined, opts: UseLiveStreamOpt
     setMixerView(view);
   };
 
-  const getToken = async (): Promise<string> => {
-    const room = roomRef.current ?? '';
-    if (isHost()) return (optsRef.current.fetchHostTicket ?? defaultHostTicket)(room);
-    const token = localStorage.getItem('tint_guest_token');
-    if (!token) throw new StreamError(401, 'UNAUTHORIZED', streamErrorMessage('UNAUTHORIZED'));
-    return token;
-  };
+  const getToken = (): Promise<string> =>
+    requestTicket(optsRef.current.fetchTicket ?? defaultTicket, roomRef.current ?? '', isHost() ? 'host' : 'guest');
 
   const request = async (url: string, init: RequestInit): Promise<Response> => {
     try {

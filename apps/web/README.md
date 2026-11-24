@@ -105,15 +105,15 @@ flowchart LR
     API -- "fetch + Bearer" --> ID
     HPB --> API
     UPL --> API
-    HSYNC -- "sync-ticket (host)" --> API
-    HSOC -- "sync-ticket (host)" --> API
+    HSYNC -- "POST tickets/sync" --> API
+    HSOC -- "POST tickets/social" --> API
     HSYNC == "WebSocket JSON o msgpack" ==> SYNC
     HSOC == "WebSocket JSON" ==> SOC
     UPL -- "XHR PUT firmado" --> MINIO
     PLAYER -- "GET vídeo (src firmado)" --> MINIO
     HAMB -- "GET ambilight.json" --> MINIO
-    ANL -- "GET + analytics-ticket" --> AN
-    ANL -- "POST analytics-ticket" --> API
+    ANL -- "GET + ticket analytics" --> AN
+    ANL -- "POST tickets/analytics" --> API
 ```
 
 Reglas que el diagrama hace visibles:
@@ -210,7 +210,7 @@ sequenceDiagram
 
 ### 3.3 Entrar a la sala
 
-`WatchRoom` monta tres fuentes en paralelo: el vídeo (`useRoomPlayback`, REST), el Canal Sync (`useSyncSocket`) y el Canal Social (`useSocialSocket`). El host abre ambos sockets con un **sync-ticket** fresco (`POST /rooms/:id/sync-ticket`) en cada (re)conexión; el invitado, con `tint_guest_token`.
+`WatchRoom` monta tres fuentes en paralelo: el vídeo (`useRoomPlayback`, REST), el Canal Sync (`useSyncSocket`) y el Canal Social (`useSocialSocket`). Cada canal pide **su propio ticket** (ADR 0030, mínimo privilegio) en cada (re)conexión con `getServiceTicket` (`src/lib/serviceTicket.ts`, `POST /rooms/:id/tickets/:service`): `sync` para `/ws/sync`, `social` para `/ws/social` y el historial del chat, `voice` para `/ws/voice` y el escenario, `stream` para WHIP/WHEP y `analytics` (solo host) para los KPIs. El host lo pide con su ID token de Firebase y el invitado con `tint_guest_token`, que ya no viaja a ningún otro servicio: cada ticket lleva `aud = tint:<servicio>` y los demás servicios lo rechazan.
 
 ```mermaid
 sequenceDiagram
@@ -228,14 +228,14 @@ sequenceDiagram
         ID-->>PB: "{mediaId, url, status, ambilightUrl, qualities, expiresAt}"
         PB-->>V: "src = calidad resuelta (resolveQuality)"
     and Canal Sync
-        SS->>ID: "POST /rooms/:id/sync-ticket (solo host)"
+        SS->>ID: "POST /rooms/:id/tickets/sync (host: ID token; invitado: guest token)"
         ID-->>SS: "{token}"
         SS->>SC: "WS /ws/sync?room_id&token (JSON o tint.sync.msgpack)"
         SC-->>SS: "STATE {status, position_ms, rate, version, server_time_ms, media_id, can_control, volume, quality}"
         SS-->>V: "applyMaster: currentTime = expectedPosition, rate, play/pause"
     and Canal Social
-        SO->>ID: "POST /rooms/:id/sync-ticket (solo host)"
-        SO->>SOC: WS /ws/social
+        SO->>ID: "POST /rooms/:id/tickets/social"
+        SO->>SOC: "WS /ws/social?room_id&token (ticket social)"
         SOC-->>SO: "history, chat_settings, poll_state, trivia_leaderboard, trivia_schedule_state (host), trivia_question abierta"
     end
 
@@ -462,18 +462,18 @@ Los dos sockets reconectan con **backoff exponencial**: Sync 500 ms × 2ⁿ hast
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PidiendoTicket: host
-    [*] --> Conectando: invitado (tint_guest_token)
-    PidiendoTicket --> Conectando: sync-ticket OK
-    PidiendoTicket --> Fatal: 403 / 404 / 410
-    PidiendoTicket --> Reconectando: otro error
+    [*] --> PidiendoTicket: host o invitado
+    PidiendoTicket --> Conectando: ticket OK
+    PidiendoTicket --> Fatal: 403 / 404 / 410 (host)
+    PidiendoTicket --> Revocado: 403 o 401 "Token revoked" (invitado)
+    PidiendoTicket --> Expirado: otro 401 (invitado)
+    PidiendoTicket --> Reconectando: red, 5xx
     Conectando --> Abierto: onopen
     Abierto --> Reconectando: cierre normal o 1006
-    Reconectando --> PidiendoTicket: timer (host)
-    Reconectando --> Conectando: timer (invitado)
+    Reconectando --> PidiendoTicket: timer
     Abierto --> Revocado: cierre 4001
-    Abierto --> PidiendoTicket: cierre 4003 (host, una vez)
-    Abierto --> Expirado: cierre 4003 (invitado o segundo intento del host)
+    Abierto --> PidiendoTicket: cierre 4003 (una vez)
+    Abierto --> Expirado: segundo 4003 seguido
     Revocado --> [*]
     Expirado --> [*]
     Fatal --> [*]
@@ -482,12 +482,13 @@ stateDiagram-v2
 | Cierre o error | Canal Sync (`useSyncSocket`) | Qué ve el usuario (`WatchRoom`) |
 | :--- | :--- | :--- |
 | `4001` (revocado) | No reconecta (Sync y Social); el invitado borra `tint_guest_token`; `revoked = true`. | "Fuiste retirado de la sala por el host" (o "El host terminó la sala" si el vídeo ya había terminado). |
-| `4003` (token caducado) | Invitado (Sync y Social): no reconecta y borra el token. Host: pide un sync-ticket nuevo **una vez** (se rearma al recibir `STATE`); si se repite, se rinde. `expired = true`. | "Tu invitación expiró" o "Tu sesión de sincronía caducó". |
-| sync-ticket 403 / 404 / 410 | `fatalError = NOT_HOST / ROOM_GONE`, sin reintentos. | "No eres el host de esta sala" o "La sala ya no existe". |
+| `4003` (ticket caducado) | Host e invitado piden un ticket nuevo **una vez** (Sync se rearma al recibir `STATE`, Social con `history`, Voz con `voice_state`); si se repite, se rinden con `expired = true` y el invitado borra su token. | "Tu invitación expiró" o "Tu sesión de sincronía caducó". |
+| Ticket del host 403 / 404 / 410 | `fatalError = NOT_HOST / ROOM_GONE / ROOM_DISABLED`, sin reintentos. | "No eres el host de esta sala", "La sala ya no existe" o el fin del evento. |
+| Ticket del invitado 401 / 403 | 403 o `401 Token revoked` → `revoked`; otro 401 (sesión caducada) → `expired`; en ambos borra `tint_guest_token`. 404/410 como el host. | "Fuiste retirado…" o "Tu invitación expiró". |
 | `GET /playback` 401/403 (invitado) | `useRoomPlayback` borra el token y expone `revoked`. | "Tu invitación ya no es válida". |
 | Cualquier otro cierre | Reintento con backoff; `reconnect = {attempt, nextRetryAt}`. | "Reconectando… intento N · S s" sin desmontar el reproductor. |
 
-El **Canal Social** (`useSocialSocket`) aplica los mismos cierres terminales: `4001` borra `tint_guest_token`, expone `revoked = true`, queda `closed` y no vuelve a reconectar (antes reconectaba siempre y entraba en bucle, porque social-core hace el upgrade y cierra con `4001` en cada intento); `4003` de un invitado expone `expired = true` y tampoco reconecta (el host sí: pide un ticket nuevo en cada intento). `WatchRoom` expulsa si **cualquiera** de los dos canales dice `revoked` (o `expired`), así que un ban saca al participante de la sala aunque solo el chat haya recibido el cierre. Sigue reconectando ante cualquier otro cierre, salvo que el sync-ticket responda 403/404/410 (`status: 'closed'`). 
+El **Canal Social** (`useSocialSocket`) aplica los mismos cierres terminales: `4001` borra `tint_guest_token`, expone `revoked = true`, queda `closed` y no vuelve a reconectar (antes reconectaba siempre y entraba en bucle, porque social-core hace el upgrade y cierra con `4001` en cada intento); `4003` pide un ticket nuevo una vez (host e invitado) y un segundo `4003` seguido expone `expired = true`. `WatchRoom` expulsa si **cualquiera** de los dos canales dice `revoked` (o `expired`), así que un ban saca al participante de la sala aunque solo el chat haya recibido el cierre. Sigue reconectando ante cualquier otro cierre, salvo que el ticket `social` sea rechazado (403/404/410, o 401 del invitado; `status: 'closed'`). 
 
 **Red de seguridad (`useRevocationProbe`).** En Chromium el cierre `4001` puede llegar como `1006` ("Close received after close": al responder el navegador el cierre, sync-core y social-core envían una segunda trama de cierre y el navegador aborta la conexión), así que el invitado nunca vería el código y reconectaría para siempre con la sala a la vista. Mientras algún canal esté reconectando, un invitado consulta `GET /rooms/:id/playback` de inmediato y cada 3 s: un **401/403** (token revocado o de otra sala) es una expulsión (borra `tint_guest_token`, `WatchRoom` muestra "Fuiste retirado de la sala por el host"); un fallo de red o un 5xx no expulsa y se vuelve a preguntar. Se detiene al recuperarse la conexión. Así el ban expulsa en ~1 s aunque el código de cierre no llegue.Solo el socket vigente puede programar reconexiones: el cierre tardío de un socket viejo (StrictMode, limpieza) se ignora.
 
@@ -513,7 +514,7 @@ No hay store global: el estado vive en los hooks y `WatchRoom` lo reparte por pr
 | Clave | Contenido | Acceso |
 | :--- | :--- | :--- |
 | `tint_token` | ID token de Firebase del host (lo refresca `authSession.ts`). | `localStorage` directo |
-| `tint_guest_token` | Guest token HS256 del invitado. | `localStorage` directo |
+| `tint_guest_token` | Guest token HS256 del invitado (`aud` de identity-api): solo sirve para la API REST y para pedir los tickets por servicio. | `localStorage` directo |
 | `tint_room_title` · `tint_invite_link` | Título y link guardados al canjear (el invitado no puede pedirlos al backend). | `localStorage` directo |
 | `tint_device_id` | UUID del dispositivo para el bloqueo (respaldo en memoria si no hay almacenamiento). | `safeStorage` |
 | `tint_ambilight` | Preferencia del interruptor Ambilight (`off` lo apaga). | `safeStorage` |

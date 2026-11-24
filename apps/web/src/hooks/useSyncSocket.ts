@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { apiFetch } from '../lib/api';
-import { errorStatus } from '../lib/errorStatus';
-import { CLOSE_ROOM_DISABLED, isRoomDisabledError } from '../lib/roomClosed';
+import { CLOSE_ROOM_DISABLED } from '../lib/roomClosed';
+import { classifyTicketError, serviceTicketToken } from '../lib/serviceTicket';
 import type { Correction } from '../lib/drift';
 import {
   decodeFrame,
@@ -47,17 +46,13 @@ export type SyncRole = 'host' | 'guest';
 
 export type SyncFatalError = 'NOT_HOST' | 'ROOM_GONE' | 'ROOM_DISABLED';
 
-function fatalTicketError(err: unknown): SyncFatalError | null {
-  const status = errorStatus(err);
-  if (isRoomDisabledError(err)) return 'ROOM_DISABLED';
-  if (status === 403) return 'NOT_HOST';
-  if (status === 404 || status === 410) return 'ROOM_GONE';
-  return null;
-}
 
 export interface UseSyncSocketOptions {
   roomId: string;
-  /** host → pide un sync-ticket en identity-api; guest → usa tint_guest_token. */
+  /**
+   * Credencial con la que se pide el ticket `sync` (ADR 0030) en cada (re)conexión: host → ID
+   * token de Firebase; guest → `tint_guest_token`, que ya no viaja al WebSocket.
+   */
   role: SyncRole;
   /** Posición local actual en ms (p. ej. del <video>); null si no hay reproductor. */
   getPositionMs?: () => number | null;
@@ -116,17 +111,18 @@ export interface SyncSocketApi {
   /** El token fue revocado por el host (cierre 4001): no se reconecta. */
   revoked: boolean;
   /**
-   * El token caducó (cierre 4003): el invitado no reconecta y borra `tint_guest_token`;
-   * el host pide un sync-ticket nuevo una vez y, si vuelve a pasar, se rinde.
+   * El token caducó: tras un cierre 4003 se pide un ticket nuevo una vez (host e invitado) y, si
+   * vuelve a pasar, se rinde; también si identity-api ya no renueva la sesión del invitado (401),
+   * en cuyo caso se borra `tint_guest_token`.
    */
   expired: boolean;
   /**
-   * La sala fue deshabilitada al terminar el evento (ADR 0019): cierre `4010` o sync-ticket con
+   * La sala fue deshabilitada al terminar el evento (ADR 0019): cierre `4010` o ticket con
    * `410 {error:"Disabled"}`. No se reconecta.
    */
   disabled: boolean;
   /**
-   * El host no puede sincronizar y reintentar no lo arregla: el sync-ticket respondió
+   * No se puede sincronizar y reintentar no lo arregla: el ticket `sync` respondió
    * 403 (`NOT_HOST`, no es el dueño) o 404/410 (`ROOM_GONE`, sala inexistente o borrada).
    */
   fatalError: SyncFatalError | null;
@@ -147,11 +143,6 @@ export interface SyncSocketApi {
    * devuelve false si el socket no está abierto o el stall es trivial (< 100 ms).
    */
   sendBuffering: (positionMs: number, durationMs: number) => boolean;
-}
-
-interface SyncTicket {
-  token: string;
-  expiresAt: string;
 }
 
 const defaultNow = () => performance.now();
@@ -395,22 +386,30 @@ export function useSyncSocket({
     };
 
     const connect = () => {
-      if (role === 'guest') {
-        // El guest token ya está en localStorage: conexión síncrona.
-        openSocket(localStorage.getItem('tint_guest_token'));
+      if (role === 'guest' && !localStorage.getItem('tint_guest_token')) {
+        // Sin sesión de invitado no hay con qué pedir el ticket.
+        openSocket(null);
         return;
       }
-      // Ticket fresco en cada (re)conexión: son de vida corta.
-      apiFetch(`/rooms/${encodeURIComponent(roomId)}/sync-ticket`, { method: 'POST' })
-        .then((ticket: SyncTicket) => {
-          if (!disposed) openSocket(ticket.token);
+      // Ticket `sync` fresco en cada (re)conexión, también para el invitado (ADR 0030).
+      serviceTicketToken(roomId, 'sync', role)
+        .then((token) => {
+          if (!disposed) openSocket(token);
         })
         .catch((err: unknown) => {
           if (disposed) return;
-          const fatal = fatalTicketError(err);
-          if (fatal) {
+          const failure = classifyTicketError(err, role);
+          if (failure === 'revoked' || failure === 'expired') {
+            // La sesión del invitado ya no sirve: no hay ticket que pedir.
+            localStorage.removeItem('tint_guest_token');
+            if (failure === 'revoked') setRevoked(true);
+            else setExpired(true);
+            setReconnect(null);
+            return;
+          }
+          if (failure) {
             // No es el dueño o la sala ya no existe: reintentar no lo arregla.
-            setFatalError(fatal);
+            setFatalError(failure === 'disabled' ? 'ROOM_DISABLED' : failure === 'forbidden' ? 'NOT_HOST' : 'ROOM_GONE');
             setReconnect(null);
             return;
           }
@@ -460,8 +459,8 @@ export function useSyncSocket({
           return;
         }
         if (ev.code === CLOSE_EXPIRED) {
-          // Token caducado: el invitado no puede renovarlo; el host pide un ticket nuevo una vez.
-          if (role === 'host' && !renewedAfterExpiry) {
+          // Ticket caducado: host e invitado piden uno nuevo una vez (se rearma con STATE).
+          if (!renewedAfterExpiry) {
             renewedAfterExpiry = true;
             connect();
             return;

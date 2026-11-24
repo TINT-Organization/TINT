@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiFetch } from '../lib/api';
 import { useSocialSocket } from './useSocialSocket';
+import { echoTicket, flushTicket } from '../test/serviceTicketMock';
 
 vi.mock('../lib/api', async (orig) => ({
   ...(await orig<typeof import('../lib/api')>()),
@@ -44,8 +45,9 @@ class FakeSocket {
 const create = (url: string) => new FakeSocket(url) as unknown as WebSocket;
 const last = () => FakeSocket.instances[FakeSocket.instances.length - 1];
 
-function connected(role?: 'guest') {
+async function connected(role?: 'guest') {
   const hook = renderHook(() => useSocialSocket('r1', { createSocket: create, role }));
+  await flushTicket();
   const ws = last();
   act(() => ws.open());
   return { ...hook, ws };
@@ -64,6 +66,7 @@ beforeEach(() => {
   FakeSocket.instances = [];
   localStorage.clear();
   mockedApiFetch.mockReset();
+  mockedApiFetch.mockImplementation(echoTicket);
   vi.useFakeTimers();
   vi.setSystemTime(100_000);
 });
@@ -71,8 +74,8 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('useSocialSocket — moderación del chat', () => {
-  it('chatSettings arranca apagado y sigue a chat_settings', () => {
-    const { result, ws } = connected();
+  it('chatSettings arranca apagado y sigue a chat_settings', async () => {
+    const { result, ws } = await connected();
     expect(result.current.chatSettings).toEqual({ slow_mode_s: 0, muted_user_ids: [] });
     act(() => ws.receive({ type: 'chat_settings', slow_mode_s: 10, muted_user_ids: ['u2'] }));
     expect(result.current.chatSettings).toEqual({ slow_mode_s: 10, muted_user_ids: ['u2'] });
@@ -81,8 +84,8 @@ describe('useSocialSocket — moderación del chat', () => {
     expect(result.current.chatSettings).toEqual({ slow_mode_s: 0, muted_user_ids: [] });
   });
 
-  it('setSlowMode y muteUser envían sus frames; valores inválidos no salen', () => {
-    const { result, ws } = connected();
+  it('setSlowMode y muteUser envían sus frames; valores inválidos no salen', async () => {
+    const { result, ws } = await connected();
     expect(result.current.setSlowMode(7)).toBe(false);
     act(() => {
       result.current.setSlowMode(30);
@@ -94,23 +97,23 @@ describe('useSocialSocket — moderación del chat', () => {
     ]);
   });
 
-  it('send con spoiler marca el mensaje', () => {
-    const { result, ws } = connected();
+  it('send con spoiler marca el mensaje', async () => {
+    const { result, ws } = await connected();
     act(() => {
       result.current.send('el final', { spoiler: true });
     });
     expect(ws.sentJson()[0]).toMatchObject({ type: 'chat_send', text: 'el final', spoiler: true });
   });
 
-  it('SLOW_MODE fija la cuenta regresiva con retry_after_ms', () => {
-    const { result, ws } = connected('guest');
+  it('SLOW_MODE fija la cuenta regresiva con retry_after_ms', async () => {
+    const { result, ws } = await connected('guest');
     act(() => ws.receive({ type: 'error', code: 'SLOW_MODE', retry_after_ms: 4_000 }));
     expect(result.current.lastError).toEqual({ code: 'SLOW_MODE', event_id_ref: undefined, retry_after_ms: 4_000 });
     expect(result.current.chatCooldownUntil).toBe(104_000);
   });
 
-  it('con modo lento, el invitado espera tras enviar (pre-validación local)', () => {
-    const { result, ws } = connected('guest');
+  it('con modo lento, el invitado espera tras enviar (pre-validación local)', async () => {
+    const { result, ws } = await connected('guest');
     act(() => ws.receive({ type: 'chat_settings', slow_mode_s: 5, muted_user_ids: [] }));
     act(() => {
       result.current.send('hola');
@@ -118,8 +121,8 @@ describe('useSocialSocket — moderación del chat', () => {
     expect(result.current.chatCooldownUntil).toBe(105_000);
   });
 
-  it('sin modo lento no hay cuenta regresiva al enviar', () => {
-    const { result } = connected('guest');
+  it('sin modo lento no hay cuenta regresiva al enviar', async () => {
+    const { result } = await connected('guest');
     act(() => {
       result.current.send('hola');
     });
@@ -128,8 +131,8 @@ describe('useSocialSocket — moderación del chat', () => {
 });
 
 describe('useSocialSocket — trivia', () => {
-  it('pregunta, confirmación y resultado', () => {
-    const { result, ws } = connected('guest');
+  it('pregunta, confirmación y resultado', async () => {
+    const { result, ws } = await connected('guest');
     expect(result.current.trivia).toEqual({ question: null, receivedAt: null, ack: null, result: null, myOption: null });
     act(() => ws.receive(question));
     expect(result.current.trivia.question).toMatchObject({ trivia_id: 't1' });
@@ -150,16 +153,16 @@ describe('useSocialSocket — trivia', () => {
     expect(result.current.trivia).toMatchObject({ ack: null, result: null, myOption: null });
   });
 
-  it('ignora ack y resultados de otra pregunta', () => {
-    const { result, ws } = connected('guest');
+  it('ignora ack y resultados de otra pregunta', async () => {
+    const { result, ws } = await connected('guest');
     act(() => ws.receive(question));
     act(() => ws.receive({ type: 'trivia_ack', trivia_id: 'otra', option: 1, score: 0 }));
     act(() => ws.receive({ type: 'trivia_result', trivia_id: 'otra', correct: 0, top: [] }));
     expect(result.current.trivia).toMatchObject({ ack: null, result: null });
   });
 
-  it('el ranking acumulado persiste: llega al entrar, se reordena con cada resultado y sobrevive a dismissTrivia', () => {
-    const { result, ws } = connected('guest');
+  it('el ranking acumulado persiste: llega al entrar, se reordena con cada resultado y sobrevive a dismissTrivia', async () => {
+    const { result, ws } = await connected('guest');
     expect(result.current.triviaLeaderboard).toEqual({ entries: [], myRank: null, myTotal: null });
     act(() =>
       ws.receive({
@@ -202,15 +205,15 @@ describe('useSocialSocket — trivia', () => {
     expect(result.current.triviaLeaderboard).toEqual({ entries: [], myRank: null, myTotal: 0 });
   });
 
-  it('dismissTrivia oculta la tarjeta', () => {
-    const { result, ws } = connected('guest');
+  it('dismissTrivia oculta la tarjeta', async () => {
+    const { result, ws } = await connected('guest');
     act(() => ws.receive(question));
     act(() => result.current.dismissTrivia());
     expect(result.current.trivia.question).toBeNull();
   });
 
-  it('agenda del host ordenada por tiempo; programar y borrar piden la lista', () => {
-    const { result, ws } = connected();
+  it('agenda del host ordenada por tiempo; programar y borrar piden la lista', async () => {
+    const { result, ws } = await connected();
     act(() =>
       ws.receive({
         type: 'trivia_schedule_state',
@@ -246,6 +249,7 @@ describe('useSocialSocket — trivia', () => {
     localStorage.setItem('tint_token', 'firebase');
     mockedApiFetch.mockResolvedValue({ token: 'ticket', expiresAt: 'x' });
     renderHook(() => useSocialSocket('r1', { createSocket: create, role: 'host' }));
+    await flushTicket();
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
@@ -254,8 +258,9 @@ describe('useSocialSocket — trivia', () => {
     expect(last().sentJson()).toEqual([]);
   });
 
-  it('sin socket abierto las acciones devuelven false', () => {
+  it('sin socket abierto las acciones devuelven false', async () => {
     const { result } = renderHook(() => useSocialSocket('r1', { createSocket: create, role: 'guest' }));
+    await flushTicket();
     expect(result.current.setSlowMode(5)).toBe(false);
     expect(result.current.answerTrivia('t1', 0)).toBe(false);
     expect(result.current.trivia.myOption).toBeNull();

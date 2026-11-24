@@ -311,7 +311,7 @@ export const quizQuestions: QuizQuestion[] = [
     prompt: '¿Qué algoritmo firma los tokens propios que emite identity-api para sync-core?',
     options: ['RS256', 'ES256', 'HS256 con JWT_SECRET', 'EdDSA'],
     answer: 2,
-    explanation: 'Guest token y sync-ticket se firman con HS256 y JWT_SECRET, que debe ser el mismo en identity-api y sync-core (contrato compartido).',
+    explanation: 'Guest token y tickets por servicio se firman con HS256 y JWT_SECRET, que debe ser el mismo en identity-api y los servicios (contrato compartido); cada ticket lleva la audiencia de su servicio (ADR 0030).',
     sources: ['docs/usuarios-e-identidad.md', 'AGENTS.md'],
   },
   {
@@ -340,10 +340,10 @@ export const quizQuestions: QuizQuestion[] = [
   {
     id: 'id-04',
     category: 'identidad',
-    prompt: '¿Dónde guarda la web el sync-ticket del host?',
+    prompt: '¿Dónde guarda la web los tickets por servicio (sync, social, voz…)?',
     options: ['En localStorage.tint_token', 'Solo en memoria', 'En una cookie HttpOnly', 'En sessionStorage'],
     answer: 1,
-    explanation: 'El sync-ticket (10 min) vive solo en memoria y se pide uno nuevo en cada reconexión. tint_token guarda el ID token de Firebase y tint_guest_token el del invitado.',
+    explanation: 'Cada ticket (10 min) vive solo en memoria y se pide uno nuevo en cada reconexión, también el invitado (ADR 0030). tint_token guarda el ID token de Firebase y tint_guest_token el del invitado.',
     sources: ['docs/usuarios-e-identidad.md', 'apps/web/AGENTS.md'],
   },
   {

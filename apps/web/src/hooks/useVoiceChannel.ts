@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiFetch } from '../lib/api';
-import { errorStatus } from '../lib/errorStatus';
-import { isRoomDisabledError, ROOM_ENDED_TITLE } from '../lib/roomClosed';
+import { ROOM_ENDED_TITLE } from '../lib/roomClosed';
+import { classifyTicketError, serviceTicketToken } from '../lib/serviceTicket';
 import type { EnergySample } from '../lib/speaking';
 import { VoiceMesh } from '../lib/voiceMesh';
 import {
@@ -22,13 +21,16 @@ import {
 export type VoiceStatus = 'idle' | 'joining' | 'connected' | 'reconnecting' | 'ended';
 
 export interface UseVoiceChannelOptions {
-  /** `host` → sync-ticket fresco en cada conexión; `guest` → `tint_guest_token`. */
+  /**
+   * Con qué credencial se pide el ticket `voice` (ADR 0030) en cada conexión: `host` → ID token
+   * de Firebase; `guest` → `tint_guest_token`, que ya no viaja al WebSocket.
+   */
   role: 'host' | 'guest';
   /** Inyectables para pruebas. */
   createSocket?: (url: string) => WebSocket;
   getUserMedia?: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
   createPeerConnection?: (config: RTCConfiguration) => RTCPeerConnection;
-  fetchHostTicket?: (roomId: string) => Promise<string>;
+  fetchTicket?: (roomId: string, role: 'host' | 'guest') => Promise<string>;
   baseUrl?: string;
   reconnectBaseMs?: number;
   reconnectMaxMs?: number;
@@ -38,16 +40,18 @@ export const VOICE_AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
 };
 
-/** Sync-ticket rechazado sin remedio: no es el dueño (403) o la sala no existe (404/410). */
-const FATAL_TICKET_STATUS = [403, 404, 410];
 const WS_OPEN = 1;
 
-async function defaultHostTicket(roomId: string): Promise<string> {
-  const ticket = (await apiFetch(`/rooms/${encodeURIComponent(roomId)}/sync-ticket`, { method: 'POST' })) as {
-    token: string;
-  };
-  return ticket.token;
-}
+const defaultTicket = (roomId: string, role: 'host' | 'guest') => serviceTicketToken(roomId, 'voice', role);
+
+/** Aviso cuando identity-api no da el ticket `voice` y reintentar no lo arregla. */
+const TICKET_NOTICE = {
+  disabled: `${ROOM_ENDED_TITLE}.`,
+  revoked: 'Ya no tienes acceso a esta sala.',
+  expired: 'Tu invitación caducó. Pide al host un link nuevo.',
+  forbidden: 'No se pudo entrar a la voz de esta sala.',
+  gone: 'No se pudo entrar a la voz de esta sala.',
+} as const;
 
 function without<T>(record: Record<string, T>, key: string): Record<string, T> {
   if (!(key in record)) return record;
@@ -58,8 +62,9 @@ function without<T>(record: Record<string, T>, key: string): Record<string, T> {
 
 /**
  * Canal de Voz (voice-core `/ws/voice` + WebRTC P2P). Nada se conecta hasta `join()`, que
- * pide el micrófono. Reconecta con espera exponencial salvo en cierres terminales (4001
- * revocado, 4008 llena, 4003 de un invitado); al volver la red reinicia ICE.
+ * pide el micrófono y el ticket `voice` (ADR 0030). Reconecta con espera exponencial y un ticket
+ * nuevo salvo en cierres terminales (4001 revocado, 4008 llena, 4009, 4010 y un segundo 4003
+ * seguido); al volver la red reinicia ICE.
  */
 export function useVoiceChannel(roomId: string | undefined, opts: UseVoiceChannelOptions) {
   const optsRef = useRef(opts);
@@ -78,7 +83,7 @@ export function useVoiceChannel(roomId: string | undefined, opts: UseVoiceChanne
   const [hostMuted, setHostMuted] = useState(false);
   /** Cierre 4009: sala `live` y este usuario no está en el escenario. */
   const [notOnStage, setNotOnStage] = useState(false);
-  /** Cierre 4010 o sync-ticket con 410 Disabled: el evento terminó (ADR 0019). */
+  /** Cierre 4010 o ticket con 410 Disabled: el evento terminó (ADR 0019). */
   const [roomDisabled, setRoomDisabled] = useState(false);
 
   // Estado de la conexión fuera de React: los handlers del socket lo leen sin closures viejos.
@@ -92,6 +97,8 @@ export function useVoiceChannel(roomId: string | undefined, opts: UseVoiceChanne
     timer: null as ReturnType<typeof setTimeout> | null,
     wantMuted: false,
     hostMuted: false,
+    /** Ya se pidió un ticket nuevo tras un 4003; se rearma con `voice_state`. */
+    renewedAfterExpiry: false,
   }).current;
 
   const send = (text: string) => {
@@ -150,6 +157,7 @@ export function useVoiceChannel(roomId: string | undefined, opts: UseVoiceChanne
     switch (msg.type) {
       case 'voice_state': {
         rt.attempt = 0;
+        rt.renewedAfterExpiry = false;
         rt.selfId = msg.self.peer_id;
         rt.hostMuted = msg.self.host_muted;
         if (msg.self.host_muted) rt.wantMuted = true;
@@ -226,7 +234,8 @@ export function useVoiceChannel(roomId: string | undefined, opts: UseVoiceChanne
       setRemoteStreams({});
       setConnection({});
       if (!rt.active) return;
-      const terminal = voiceCloseNotice(ev.code, optsRef.current.role === 'host');
+      const terminal = voiceCloseNotice(ev.code, !rt.renewedAfterExpiry);
+      if (ev.code === VOICE_CLOSE.EXPIRED) rt.renewedAfterExpiry = true;
       if (ev.code === VOICE_CLOSE.NOT_ON_STAGE) setNotOnStage(true);
       if (ev.code === VOICE_CLOSE.ROOM_DISABLED) setRoomDisabled(true);
       if (terminal) {
@@ -242,26 +251,19 @@ export function useVoiceChannel(roomId: string | undefined, opts: UseVoiceChanne
     const room = roomRef.current;
     if (!rt.active || !room) return;
     setStatus(rt.attempt === 0 ? 'joining' : 'reconnecting');
-    if (optsRef.current.role !== 'host') {
-      openSocket(localStorage.getItem('tint_guest_token') ?? '');
-      return;
-    }
+    const role = optsRef.current.role;
     try {
-      const token = await (optsRef.current.fetchHostTicket ?? defaultHostTicket)(room);
+      const token = await (optsRef.current.fetchTicket ?? defaultTicket)(room, role);
       if (rt.active) openSocket(token);
     } catch (err) {
       if (!rt.active) return;
-      const code = errorStatus(err);
-      if (code !== null && FATAL_TICKET_STATUS.includes(code)) {
-        if (isRoomDisabledError(err)) {
-          setRoomDisabled(true);
-          finish('ended', `${ROOM_ENDED_TITLE}.`);
-          return;
-        }
-        finish('ended', 'No se pudo entrar a la voz de esta sala.');
+      const failure = classifyTicketError(err, role);
+      if (!failure) {
+        scheduleReconnect();
         return;
       }
-      scheduleReconnect();
+      if (failure === 'disabled') setRoomDisabled(true);
+      finish('ended', TICKET_NOTICE[failure]);
     }
   };
 
