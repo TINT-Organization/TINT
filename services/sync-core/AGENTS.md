@@ -55,14 +55,14 @@ La posición nunca se guarda "en vivo": `posición(t) = position_ms + (t − upd
 ### Conexión
 `GET /ws/sync?room_id={id}&token={JWT}` (el token va en la query porque el navegador no permite headers en WebSocket; **nunca registres la URL completa**).
 
-Tokens HS256 firmados por identity-api con `JWT_SECRET`, `iss=tint-identity`, `aud=tint:room`, `exp` obligatorio, `sub` no vacío, `room_id` igual al de la query:
+Tokens HS256 firmados por identity-api con `JWT_SECRET`, `iss=tint-identity`, `exp` obligatorio, `sub` no vacío, `room_id` igual al de la query y **audiencia propia** ([ADR 0030](../../docs/adr/0030-tickets-por-servicio-minimo-privilegio.md)): `aud` (string o lista, RFC 7519) debe contener `JWT_AUDIENCE` (`tint:sync` en Compose) o, solo durante la transición y si tiene valor, `JWT_LEGACY_AUDIENCE` (`tint:room`). Un ticket de otro servicio (`tint:social`, `tint:voice`, `tint:stream`, `tint:analytics`, `tint:api`) es un token inválido: `401` antes del upgrade, aunque además esté expirado (nunca llega al `4003`). Con `JWT_LEGACY_AUDIENCE` vacía, `tint:room` también se rechaza (falla cerrado).
 - **Guest token** (al unirse a la sala) → `role: participant`.
 - **Sync-ticket** (`POST /api/v1/rooms/:id/sync-ticket`) → `role: host` (`cohost` también puede controlar).
 
 | Handshake | Resultado |
 | :--- | :--- |
 | Falta `room_id` o `token` | `400` |
-| Token inválido (firma, `iss`, `aud`) / algoritmo distinto de HS256 / sin `exp` / rol desconocido | `401` |
+| Token inválido (firma, `iss`, `aud` ajena) / algoritmo distinto de HS256 / sin `exp` / rol desconocido | `401` |
 | Token de otra sala (aunque esté expirado) | `403` |
 | `Origin` fuera de `ALLOWED_ORIGINS` | `403` (se comprueba también antes de los cierres terminales) |
 | Token expirado pero bien firmado (`iss`, `aud`, sala y rol correctos) | upgrade y cierre `4003` "token expirado" |
@@ -179,7 +179,8 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `REDIS_URL` | `redis://localhost:6379` | Redis de estado, Pub/Sub y streams. |
 | `JWT_SECRET` | — (**obligatoria**) | Secreto HS256; debe ser el mismo de identity-api. Sin él el servicio no arranca. |
 | `JWT_ISSUER` | `tint-identity` | `iss` esperado. |
-| `JWT_AUDIENCE` | `tint:room` | `aud` esperado. |
+| `JWT_AUDIENCE` | `tint:room` | Audiencia propia de sync-core; Compose le da `tint:sync` (ADR 0030). |
+| `JWT_LEGACY_AUDIENCE` | vacía | Audiencia legada aceptada además de la propia durante la transición de ADR 0030 (`tint:room`). Vacía = desactivada: solo se acepta `JWT_AUDIENCE`. |
 | `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | Patrones de host permitidos en el handshake, separados por coma. |
 | `ROOM_TTL` | `12h` | Periodo de gracia de la sala (duración Go, positiva). |
 | `CONTROL_HANDOFF_AFTER` | `5m` | Tiempo sin host/cohost tras el cual se delega el control (duración Go, positiva). |

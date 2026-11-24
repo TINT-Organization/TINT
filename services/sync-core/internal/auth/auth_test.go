@@ -34,7 +34,7 @@ func sign(t *testing.T, method jwt.SigningMethod, key any, mutate func(jwt.MapCl
 }
 
 func newVerifier() *Verifier {
-	v := NewVerifier(secret, iss, aud)
+	v := NewVerifier(secret, iss, aud, "")
 	v.now = func() time.Time { return now }
 	return v
 }
@@ -123,7 +123,7 @@ func TestCanControl(t *testing.T) {
 }
 
 func TestNewVerifierUsesRealClock(t *testing.T) {
-	v := NewVerifier(secret, iss, aud)
+	v := NewVerifier(secret, iss, aud, "")
 	tok := sign(t, jwt.SigningMethodHS256, []byte(secret), func(c jwt.MapClaims) {
 		c["exp"] = time.Now().Add(time.Minute).Unix()
 	})
@@ -175,5 +175,68 @@ func TestVerifyExpired(t *testing.T) {
 				t.Errorf("err = %v, want %v sin ErrTokenExpired", err, tt.want)
 			}
 		})
+	}
+}
+
+// AC1 de ADR 0030: sync-core solo acepta tickets con su propia audiencia
+// (JWT_AUDIENCE) y, durante la transición, la de JWT_LEGACY_AUDIENCE si tiene
+// valor. Cualquier otra se rechaza como un token inválido.
+func TestVerifyAudiencePerService(t *testing.T) {
+	const own, legacy = "tint:sync", "tint:room"
+	tests := []struct {
+		name   string
+		legacy string
+		aud    any
+		ok     bool
+	}{
+		{"propia", "", own, true},
+		{"propia en lista", "", []string{"tint:otra", own}, true},
+		{"analytics", legacy, "tint:analytics", false},
+		{"voice", legacy, "tint:voice", false},
+		{"social", legacy, "tint:social", false},
+		{"stream", legacy, "tint:stream", false},
+		{"api", legacy, "tint:api", false},
+		{"lista sin la propia", legacy, []string{"tint:voice", "tint:social"}, false},
+		{"lista vacía", legacy, []string{}, false},
+		{"vacía con la variable vacía", "", "", false},
+		{"legada con la variable vacía", "", legacy, false},
+		{"legada en lista con la variable vacía", "", []string{legacy}, false},
+		{"legada con la variable definida", legacy, legacy, true},
+		{"legada en lista con la variable definida", legacy, []string{"tint:voice", legacy}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := NewVerifier(secret, iss, own, tt.legacy)
+			v.now = func() time.Time { return now }
+			tok := sign(t, jwt.SigningMethodHS256, []byte(secret), func(c jwt.MapClaims) { c["aud"] = tt.aud })
+			_, err := v.Verify(tok, room)
+			if tt.ok && err != nil {
+				t.Fatalf("aud %v debe aceptarse: %v", tt.aud, err)
+			}
+			if !tt.ok && (!errors.Is(err, ErrInvalidToken) || errors.Is(err, ErrTokenExpired)) {
+				t.Fatalf("aud %v: err = %v, want ErrInvalidToken", tt.aud, err)
+			}
+		})
+	}
+	// Sin aud no hay audiencia que comprobar: también se rechaza.
+	v := NewVerifier(secret, iss, own, legacy)
+	v.now = func() time.Time { return now }
+	tok := sign(t, jwt.SigningMethodHS256, []byte(secret), func(c jwt.MapClaims) { delete(c, "aud") })
+	if _, err := v.Verify(tok, room); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("sin aud: err = %v, want ErrInvalidToken", err)
+	}
+}
+
+// Un ticket de otro servicio ya vencido no se distingue de uno inválido: no
+// llega al cierre 4003 de "token expirado".
+func TestVerifyExpiredForeignAudience(t *testing.T) {
+	v := NewVerifier(secret, iss, "tint:sync", "tint:room")
+	v.now = func() time.Time { return now }
+	tok := sign(t, jwt.SigningMethodHS256, []byte(secret), func(c jwt.MapClaims) {
+		c["aud"] = "tint:voice"
+		c["exp"] = now.Add(-time.Minute).Unix()
+	})
+	if _, err := v.Verify(tok, room); !errors.Is(err, ErrInvalidToken) || errors.Is(err, ErrTokenExpired) {
+		t.Errorf("err = %v, want ErrInvalidToken sin ErrTokenExpired", err)
 	}
 }

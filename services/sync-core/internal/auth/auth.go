@@ -7,6 +7,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -53,15 +54,38 @@ type tokenClaims struct {
 
 // Verifier valida tokens HS256 de identity-api.
 type Verifier struct {
-	secret   []byte
-	issuer   string
-	audience string
-	now      func() time.Time
+	secret    []byte
+	issuer    string
+	audiences []string // la propia y, si se configuró, la legada
+	now       func() time.Time
 }
 
 // NewVerifier crea un Verifier con el secreto compartido.
-func NewVerifier(secret, issuer, audience string) *Verifier {
-	return &Verifier{secret: []byte(secret), issuer: issuer, audience: audience, now: time.Now}
+//
+// audience es la audiencia propia de sync-core (JWT_AUDIENCE, `tint:sync` en
+// Compose; ADR 0030). legacyAudience es la audiencia legada que se acepta
+// durante la transición (JWT_LEGACY_AUDIENCE); vacía la desactiva.
+func NewVerifier(secret, issuer, audience, legacyAudience string) *Verifier {
+	auds := []string{audience}
+	if legacyAudience != "" {
+		auds = append(auds, legacyAudience)
+	}
+	return &Verifier{secret: []byte(secret), issuer: issuer, audiences: auds, now: time.Now}
+}
+
+// errAudience: el token no es para este servicio (ADR 0030). Se envuelve como
+// ErrInvalidToken, igual que un iss o una firma incorrectos.
+var errAudience = errors.New("audiencia no aceptada")
+
+// acceptsAudience indica si alguna audiencia del token (string o lista,
+// RFC 7519 §4.1.3) es una de las aceptadas. Las cadenas vacías nunca valen.
+func (v *Verifier) acceptsAudience(aud jwt.ClaimStrings) bool {
+	for _, a := range aud {
+		if a != "" && slices.Contains(v.audiences, a) {
+			return true
+		}
+	}
+	return false
 }
 
 // Verify valida firma, algoritmo, iss, aud, exp y que el token sea de roomID.
@@ -105,9 +129,13 @@ func (v *Verifier) parse(token string, now func() time.Time) (tokenClaims, error
 		func(*jwt.Token) (any, error) { return v.secret, nil },
 		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
 		jwt.WithIssuer(v.issuer),
-		jwt.WithAudience(v.audience),
 		jwt.WithExpirationRequired(),
 		jwt.WithTimeFunc(now),
 	)
+	// La audiencia se comprueba aquí (y no con jwt.WithAudience, que admite
+	// una sola) para que también decida al revalidar un token expirado.
+	if err == nil && !v.acceptsAudience(tc.Audience) {
+		err = errAudience
+	}
 	return tc, err
 }
