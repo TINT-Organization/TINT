@@ -120,6 +120,21 @@ TEST_F(RequestDecision, BadSignature401) {
   EXPECT_EQ(problem(run(whip(sign_jwt(host_claims(), "otro-secreto")))).status, 401);
 }
 
+// ADR 0030 (AC1): un ticket de otro servicio es un token inválido más en WHIP y WHEP.
+TEST_F(RequestDecision, TicketOfAnotherService401) {
+  for (const char* aud : {"tint:sync", "tint:social", "tint:voice", "tint:analytics", "tint:api"}) {
+    auto host = host_claims();
+    host["aud"] = aud;
+    auto p = problem(run(whip(sign_jwt(host))));
+    EXPECT_EQ(p.status, 401) << aud;
+    EXPECT_EQ(p.code, "UNAUTHORIZED") << aud;
+
+    auto guest = guest_claims();
+    guest["aud"] = aud;
+    EXPECT_EQ(problem(run(whep(sign_jwt(guest)))).status, 401) << aud;
+  }
+}
+
 TEST_F(RequestDecision, ExpiredToken401WithOwnCode) {
   auto c = host_claims();
   c["exp"] = kNow - 1;

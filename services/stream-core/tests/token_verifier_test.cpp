@@ -43,6 +43,51 @@ TEST_F(TokenVerifierTest, AcceptsAudienceAsArray) {
   EXPECT_TRUE(verifier.verify(sign_jwt(claims), kNow).has_value());
 }
 
+// ADR 0030 (AC1): un ticket emitido para otro servicio no abre stream-core.
+TEST_F(TokenVerifierTest, RejectsAudiencesOfOtherServices) {
+  for (const char* aud : {"tint:api", "tint:sync", "tint:social", "tint:voice", "tint:analytics"}) {
+    auto claims = guest_claims();
+    claims["aud"] = aud;
+    auto result = verifier.verify(sign_jwt(claims), kNow);
+    ASSERT_FALSE(result.has_value()) << aud;
+    EXPECT_EQ(result.error(), TokenError::WrongAudience) << aud;
+  }
+}
+
+TEST_F(TokenVerifierTest, RejectsLegacyAudienceWhenTransitionIsDisabled) {
+  auto claims = guest_claims();
+  claims["aud"] = kLegacyAudience;
+  EXPECT_EQ(verifier.verify(sign_jwt(claims), kNow).error(), TokenError::WrongAudience);
+
+  TokenVerifier empty_legacy{kSecret, kIssuer, kAudience, ""};
+  EXPECT_EQ(empty_legacy.verify(sign_jwt(claims), kNow).error(), TokenError::WrongAudience);
+}
+
+TEST_F(TokenVerifierTest, AcceptsLegacyAudienceOnlyWhenConfigured) {
+  TokenVerifier transition{kSecret, kIssuer, kAudience, kLegacyAudience};
+  auto legacy = guest_claims();
+  legacy["aud"] = kLegacyAudience;
+  EXPECT_TRUE(transition.verify(sign_jwt(legacy), kNow).has_value());
+  EXPECT_TRUE(transition.verify(sign_jwt(guest_claims()), kNow).has_value()) << "la propia sigue valiendo";
+
+  auto in_array = guest_claims();
+  in_array["aud"] = {"tint:sync", kLegacyAudience};
+  EXPECT_TRUE(transition.verify(sign_jwt(in_array), kNow).has_value());
+
+  auto other = guest_claims();
+  other["aud"] = "tint:sync";
+  EXPECT_EQ(transition.verify(sign_jwt(other), kNow).error(), TokenError::WrongAudience);
+}
+
+TEST_F(TokenVerifierTest, EmptyAudienceClaimNeverMatchesDisabledLegacy) {
+  TokenVerifier empty_legacy{kSecret, kIssuer, kAudience, ""};
+  for (const nlohmann::json& aud : {nlohmann::json(""), nlohmann::json::array({""})}) {
+    auto claims = guest_claims();
+    claims["aud"] = aud;
+    EXPECT_EQ(empty_legacy.verify(sign_jwt(claims), kNow).error(), TokenError::WrongAudience) << aud;
+  }
+}
+
 TEST_F(TokenVerifierTest, RejectsWrongSecret) {
   auto result = verifier.verify(sign_jwt(guest_claims(), "otro-secreto"), kNow);
   ASSERT_FALSE(result.has_value());

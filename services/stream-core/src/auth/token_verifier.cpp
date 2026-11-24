@@ -28,6 +28,7 @@ bool non_empty_string(const json& j, const char* key) {
 }
 
 bool audience_matches(const json& aud, const std::string& expected) {
+  if (expected.empty()) return false;  // una audiencia sin configurar nunca acepta nada
   if (aud.is_string()) return aud.get_ref<const std::string&>() == expected;
   for (const auto& item : aud)
     if (item.is_string() && item.get_ref<const std::string&>() == expected) return true;
@@ -58,8 +59,12 @@ std::string_view to_string(TokenError error) {
   return "unknown";
 }
 
-TokenVerifier::TokenVerifier(std::string secret, std::string issuer, std::string audience)
-    : secret_(std::move(secret)), issuer_(std::move(issuer)), audience_(std::move(audience)) {}
+TokenVerifier::TokenVerifier(std::string secret, std::string issuer, std::string audience,
+                             std::string legacy_audience)
+    : secret_(std::move(secret)),
+      issuer_(std::move(issuer)),
+      audience_(std::move(audience)),
+      legacy_audience_(std::move(legacy_audience)) {}
 
 std::expected<Claims, TokenError> TokenVerifier::verify(std::string_view token, std::int64_t now_s) const {
   const auto first = token.find('.');
@@ -103,7 +108,8 @@ std::expected<Claims, TokenError> TokenVerifier::verify(std::string_view token, 
   if (exp == p.end() || !exp->is_number()) return std::unexpected(TokenError::MissingClaim);
 
   if (p["iss"].get_ref<const std::string&>() != issuer_) return std::unexpected(TokenError::WrongIssuer);
-  if (!audience_matches(*aud, audience_)) return std::unexpected(TokenError::WrongAudience);
+  if (!audience_matches(*aud, audience_) && !audience_matches(*aud, legacy_audience_))
+    return std::unexpected(TokenError::WrongAudience);
 
   Claims claims;
   claims.exp = exp->get<std::int64_t>();

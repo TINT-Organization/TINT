@@ -31,7 +31,8 @@ TEST(Config, Defaults) {
   EXPECT_EQ(c->max_viewers, 50);
   EXPECT_EQ(c->host_grace_s, 60);
   EXPECT_EQ(c->jwt_issuer, "tint-identity");
-  EXPECT_EQ(c->jwt_audience, "tint:room");
+  EXPECT_EQ(c->jwt_audience, "tint:stream");
+  EXPECT_EQ(c->jwt_legacy_audience, "") << "sin valor, la audiencia legada queda desactivada";
   EXPECT_EQ(c->allowed_origins, (std::vector<std::string>{"localhost:5173", "127.0.0.1:5173"}));
 }
 
@@ -58,6 +59,18 @@ TEST(Config, ParsesAddressesAndLists) {
   EXPECT_EQ(c->udp_port, 40000);
   EXPECT_EQ(c->allowed_origins, (std::vector<std::string>{"a.example", "b.example:443"}));
   EXPECT_EQ(c->turn_ttl_s, 600);
+}
+
+// ADR 0030: audiencia propia y legada opcional de la transición.
+TEST(Config, ReadsOwnAndLegacyAudience) {
+  auto c = load_config(env({{"JWT_AUDIENCE", "tint:stream"}, {"JWT_LEGACY_AUDIENCE", "tint:room"}}));
+  ASSERT_TRUE(c) << c.error();
+  EXPECT_EQ(c->jwt_audience, "tint:stream");
+  EXPECT_EQ(c->jwt_legacy_audience, "tint:room");
+
+  auto disabled = load_config(env({{"JWT_LEGACY_AUDIENCE", ""}}));
+  ASSERT_TRUE(disabled);
+  EXPECT_TRUE(disabled->jwt_legacy_audience.empty());
 }
 
 TEST(Config, ViewerCapacityRange) {
