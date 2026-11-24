@@ -2,9 +2,10 @@ import { decode, encode } from '@msgpack/msgpack';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MockWebSocket } from '../test/mockWebSocket';
+import { echoTicket, flushTicket } from '../test/serviceTicketMock';
 import { useSyncSocket, type UseSyncSocketOptions } from './useSyncSocket';
 
-vi.mock('../lib/api', () => ({ apiFetch: vi.fn() }));
+vi.mock('../lib/api', () => ({ apiFetch: vi.fn((...args: Parameters<typeof echoTicket>) => echoTicket(...args)) }));
 
 const WS = 'ws://test/ws/sync';
 const state = {
@@ -26,8 +27,10 @@ function toBuffer(value: unknown): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
-function setup(opts: Partial<UseSyncSocketOptions> = {}) {
-  return renderHook(() => useSyncSocket({ roomId: 'r1', role: 'guest', url: WS, ...opts }));
+async function setup(opts: Partial<UseSyncSocketOptions> = {}) {
+  const hook = renderHook(() => useSyncSocket({ roomId: 'r1', role: 'guest', url: WS, ...opts }));
+  await flushTicket();
+  return hook;
 }
 
 beforeEach(() => {
@@ -43,22 +46,22 @@ afterEach(() => {
 });
 
 describe('useSyncSocket — MessagePack (O6)', () => {
-  it('por defecto usa JSON sin subprotocolo', () => {
+  it('por defecto usa JSON sin subprotocolo', async () => {
     vi.stubEnv('VITE_SYNC_ENCODING', '');
-    setup();
+    await setup();
     expect(MockWebSocket.last().protocols).toBeUndefined();
   });
 
-  it('VITE_SYNC_ENCODING=msgpack pide el subprotocolo y binaryType arraybuffer', () => {
+  it('VITE_SYNC_ENCODING=msgpack pide el subprotocolo y binaryType arraybuffer', async () => {
     vi.stubEnv('VITE_SYNC_ENCODING', 'msgpack');
-    setup();
+    await setup();
     const ws = MockWebSocket.last();
     expect(ws.protocols).toEqual(['tint.sync.msgpack']);
     expect(ws.binaryType).toBe('arraybuffer');
   });
 
-  it('con el subprotocolo aceptado decodifica y codifica en binario', () => {
-    const { result } = setup({ encoding: 'msgpack', getPositionMs: () => 4_100 });
+  it('con el subprotocolo aceptado decodifica y codifica en binario', async () => {
+    const { result } = await setup({ encoding: 'msgpack', getPositionMs: () => 4_100 });
     const ws = MockWebSocket.last();
     act(() => ws.open('tint.sync.msgpack'));
     act(() => ws.receiveBinary(toBuffer(state)));
@@ -80,8 +83,8 @@ describe('useSyncSocket — MessagePack (O6)', () => {
     expect(cmd).not.toHaveProperty('media_id');
   });
 
-  it('si el servidor no acepta el subprotocolo sigue en JSON', () => {
-    const { result } = setup({ encoding: 'msgpack' });
+  it('si el servidor no acepta el subprotocolo sigue en JSON', async () => {
+    const { result } = await setup({ encoding: 'msgpack' });
     const ws = MockWebSocket.last();
     act(() => ws.open(''));
     act(() => ws.receive(state));
@@ -90,8 +93,8 @@ describe('useSyncSocket — MessagePack (O6)', () => {
     expect(ws.sentJson()[0]).toMatchObject({ type: 'SYNC_CHECK', echo_server_ts: 5 });
   });
 
-  it('ignora frames binarios corruptos', () => {
-    const { result } = setup({ encoding: 'msgpack' });
+  it('ignora frames binarios corruptos', async () => {
+    const { result } = await setup({ encoding: 'msgpack' });
     const ws = MockWebSocket.last();
     act(() => ws.open('tint.sync.msgpack'));
     act(() => ws.receiveBinary(new Uint8Array([0xc1]).buffer));

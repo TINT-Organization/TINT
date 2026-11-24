@@ -2,9 +2,13 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MockWebSocket } from '../test/mockWebSocket';
 import { useSyncSocket, type UseSyncSocketOptions } from './useSyncSocket';
-import { apiFetch } from '../lib/api';
+import { ApiError, apiFetch } from '../lib/api';
+import { echoTicket, flushTicket } from '../test/serviceTicketMock';
 
-vi.mock('../lib/api', () => ({ apiFetch: vi.fn() }));
+vi.mock('../lib/api', async (orig) => ({
+  ...(await orig<typeof import('../lib/api')>()),
+  apiFetch: vi.fn(),
+}));
 const mockedApiFetch = vi.mocked(apiFetch);
 
 const WS = 'ws://test/ws/sync';
@@ -20,22 +24,19 @@ const snapshot = {
   online: true,
 } as const;
 
-function setup(opts: Partial<UseSyncSocketOptions> = {}) {
-  return renderHook((props: UseSyncSocketOptions) => useSyncSocket(props), {
+async function setup(opts: Partial<UseSyncSocketOptions> = {}) {
+  const hook = renderHook((props: UseSyncSocketOptions) => useSyncSocket(props), {
     initialProps: { roomId: 'r1', role: 'guest', url: WS, encoding: 'json', ...opts } as UseSyncSocketOptions,
   });
+  await flushTicket();
+  return hook;
 }
 
-async function flush() {
-  await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-  });
-}
+const flush = flushTicket;
 
 async function hostConnected() {
   mockedApiFetch.mockResolvedValue({ token: 't', expiresAt: 'x' });
-  const hook = setup({ role: 'host' });
+  const hook = await setup({ role: 'host' });
   await flush();
   const ws = MockWebSocket.last();
   act(() => ws.open());
@@ -47,6 +48,7 @@ beforeEach(() => {
   vi.stubGlobal('WebSocket', MockWebSocket);
   localStorage.clear();
   mockedApiFetch.mockReset();
+  mockedApiFetch.mockImplementation(echoTicket);
 });
 
 afterEach(() => {
@@ -63,9 +65,9 @@ describe('useSyncSocket — control (v2)', () => {
     expect(result.current.sendCommand('PLAY', 0)).toBeNull();
   });
 
-  it('participante recibe control delegado con CONTROL y puede enviar comandos', () => {
+  it('participante recibe control delegado con CONTROL y puede enviar comandos', async () => {
     localStorage.setItem('tint_guest_token', 'g');
-    const { result } = setup();
+    const { result } = await setup();
     const ws = MockWebSocket.last();
     act(() => ws.open());
     expect(result.current.canControl).toBe(false);
@@ -157,9 +159,9 @@ describe('useSyncSocket — RATE y LOAD (v2)', () => {
 });
 
 describe('useSyncSocket — calidad (v2)', () => {
-  it('toma rtt_ms y drift_ms del HEARTBEAT y el drift de SYNC_CORRECTION', () => {
+  it('toma rtt_ms y drift_ms del HEARTBEAT y el drift de SYNC_CORRECTION', async () => {
     localStorage.setItem('tint_guest_token', 'g');
-    const { result } = setup();
+    const { result } = await setup();
     const ws = MockWebSocket.last();
     act(() => ws.open());
     expect(result.current.rttMs).toBeNull();
@@ -186,42 +188,48 @@ describe('useSyncSocket — reconexión explícita y revocación (v2)', () => {
     localStorage.setItem('tint_guest_token', 'g');
   });
 
-  it('expone el intento y el instante del próximo reintento', () => {
-    const { result } = setup();
+  it('expone el intento y el instante del próximo reintento', async () => {
+    const { result } = await setup();
     expect(result.current.reconnect).toBeNull();
     const t0 = Date.now();
     act(() => MockWebSocket.last().close(1006));
     expect(result.current.reconnect).toEqual({ attempt: 1, nextRetryAt: t0 + 500 });
-    act(() => vi.advanceTimersByTime(500));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
     act(() => MockWebSocket.last().close(1006));
     expect(result.current.reconnect).toEqual({ attempt: 2, nextRetryAt: t0 + 500 + 1_000 });
-    act(() => vi.advanceTimersByTime(1_000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
     act(() => MockWebSocket.last().open());
     expect(result.current.reconnect).toBeNull();
   });
 
   it('si falla el ticket también expone el reintento', async () => {
     mockedApiFetch.mockRejectedValue(new Error('500'));
-    const { result } = setup({ role: 'host' });
+    const { result } = await setup({ role: 'host' });
     await flush();
     expect(result.current.reconnect).toMatchObject({ attempt: 1 });
   });
 
-  it('cierre 4001: no reconecta, borra el guest token y marca revoked', () => {
-    const { result } = setup();
+  it('cierre 4001: no reconecta, borra el guest token y marca revoked', async () => {
+    const { result } = await setup();
     act(() => MockWebSocket.last().open());
     act(() => MockWebSocket.last().close(4001, 'token revocado'));
     expect(result.current.revoked).toBe(true);
     expect(result.current.connected).toBe(false);
     expect(result.current.reconnect).toBeNull();
     expect(localStorage.getItem('tint_guest_token')).toBeNull();
-    act(() => vi.advanceTimersByTime(60_000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
     expect(MockWebSocket.instances).toHaveLength(1);
   });
 
   it('un host con cierre 4001 tampoco reconecta y no toca el guest token', async () => {
     mockedApiFetch.mockResolvedValue({ token: 't', expiresAt: 'x' });
-    const { result } = setup({ role: 'host' });
+    const { result } = await setup({ role: 'host' });
     await flush();
     act(() => MockWebSocket.last().close(4001));
     expect(result.current.revoked).toBe(true);
@@ -232,21 +240,70 @@ describe('useSyncSocket — reconexión explícita y revocación (v2)', () => {
     expect(MockWebSocket.instances).toHaveLength(1);
   });
 
-  it('cierre 4003 (token caducado): el invitado no reconecta, borra el token y marca expired', () => {
-    const { result } = setup();
+  it('cierre 4003 del invitado: pide un ticket sync nuevo una vez (ADR 0030) y, si se repite, se rinde', async () => {
+    const { result } = await setup();
     act(() => MockWebSocket.last().open());
     act(() => MockWebSocket.last().close(4003, 'token expirado'));
+    await flush();
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    expect(mockedApiFetch).toHaveBeenLastCalledWith('/rooms/r1/tickets/sync', { method: 'POST' }, 'guest');
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(result.current.expired).toBe(false);
+    act(() => MockWebSocket.last().open());
+    act(() => MockWebSocket.last().close(4003));
     expect(result.current.expired).toBe(true);
     expect(result.current.revoked).toBe(false);
     expect(result.current.reconnect).toBeNull();
     expect(localStorage.getItem('tint_guest_token')).toBeNull();
-    act(() => vi.advanceTimersByTime(60_000));
-    expect(MockWebSocket.instances).toHaveLength(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(MockWebSocket.instances).toHaveLength(2);
+  });
+
+  it('el invitado renueva su ticket en cada reconexión', async () => {
+    mockedApiFetch
+      .mockResolvedValueOnce({ token: 'g1', expires_at: 'x' })
+      .mockResolvedValueOnce({ token: 'g2', expires_at: 'x' });
+    await setup();
+    act(() => MockWebSocket.last().open());
+    act(() => MockWebSocket.last().close(1006));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    expect(MockWebSocket.last().url).toContain('token=g2');
+  });
+
+  it('ticket del invitado con 401 (sesión caducada): expired, borra el guest token y no reintenta', async () => {
+    mockedApiFetch.mockRejectedValue(new ApiError(401, 'Invalid token', { error: 'Invalid token' }));
+    const { result } = await setup();
+    expect(result.current.expired).toBe(true);
+    expect(result.current.revoked).toBe(false);
+    expect(result.current.reconnect).toBeNull();
+    expect(localStorage.getItem('tint_guest_token')).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(1);
+    expect(MockWebSocket.instances).toHaveLength(0);
+  });
+
+  it('ticket del invitado con 403 o 401 revocado: revoked, sin NOT_HOST', async () => {
+    mockedApiFetch.mockRejectedValueOnce(new ApiError(403, 'Forbidden', { error: 'Forbidden' }));
+    const first = await setup();
+    expect(first.result.current.revoked).toBe(true);
+    expect(first.result.current.fatalError).toBeNull();
+    expect(localStorage.getItem('tint_guest_token')).toBeNull();
+    localStorage.setItem('tint_guest_token', 'g');
+    mockedApiFetch.mockRejectedValueOnce(new ApiError(401, 'Token revoked', { error: 'Token revoked' }));
+    const second = await setup();
+    expect(second.result.current.revoked).toBe(true);
   });
 
   it('cierre 4003 del host: pide un ticket nuevo una sola vez y luego se rinde', async () => {
     mockedApiFetch.mockResolvedValueOnce({ token: 't1', expiresAt: 'x' }).mockResolvedValueOnce({ token: 't2', expiresAt: 'x' });
-    const { result } = setup({ role: 'host' });
+    const { result } = await setup({ role: 'host' });
     await flush();
     act(() => MockWebSocket.last().open());
     act(() => MockWebSocket.last().close(4003));
@@ -269,7 +326,7 @@ describe('useSyncSocket — reconexión explícita y revocación (v2)', () => {
 
   it('el reintento del host por 4003 se rearma tras recibir STATE', async () => {
     mockedApiFetch.mockResolvedValue({ token: 't', expiresAt: 'x' });
-    const { result } = setup({ role: 'host' });
+    const { result } = await setup({ role: 'host' });
     await flush();
     act(() => MockWebSocket.last().open());
     act(() => MockWebSocket.last().close(4003));
