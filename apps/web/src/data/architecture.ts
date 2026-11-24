@@ -99,7 +99,7 @@ export const ARCH_NODES: ArchNode[] = [
     kind: 'servicio',
     stack: 'Node 22 + Express 5 + Drizzle',
     port: '8081',
-    role: 'Usuarios, salas, invitaciones y vídeos. Es el único emisor de tokens propios (guest token, sync-ticket, analytics-ticket) y quien firma las URLs de MinIO.',
+    role: 'Usuarios, salas, invitaciones y vídeos. Es el único emisor de tokens propios (guest token y un ticket por servicio: sync, social, voice, stream y analytics, ADR 0030) y quien firma las URLs de MinIO.',
     owns: ['PostgreSQL: users, rooms, invitations, guest_sessions, room_bans, videos', 'Redis: token:revoked:{jti}'],
     adrs: [
       '0006 · Tickets JWT HS256 emitidos por identity-api',
@@ -251,7 +251,7 @@ export const ARCH_CONNECTORS: ArchConnector[] = [
   {
     id: 'C5',
     label: 'REST de solo lectura',
-    protocol: 'HTTP/JSON GET de KPIs con Bearer analytics-ticket',
+    protocol: 'HTTP/JSON GET de KPIs con Bearer ticket analytics',
     mode: 'sync',
     links: [['web', 'analytics']],
     sources: [ARQ, 'services/analytics/AGENTS.md'],

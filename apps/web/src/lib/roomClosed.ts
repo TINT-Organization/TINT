@@ -4,7 +4,7 @@ import { errorStatus } from './errorStatus';
  * Cierre de sala (ADR 0019, docs/dominio-transmision.md §6.1): una sala `live` terminada queda
  * deshabilitada en todos los servicios. La web lo reconoce por:
  * - el cierre de WebSocket `4010` ROOM_DISABLED (sync, social, voz);
- * - `410 {error:"Disabled"}` de identity-api (claim, playback, sync-ticket…);
+ * - `410 {error:"Disabled"}` de identity-api (claim, playback, tickets por servicio…);
  * - `410 {error:"ROOM_DISABLED"}` de stream-core o `stream_state` `ended` por el DataChannel.
  * No se confunde con el `4001` (retirado por el host) ni con el `410 Deleted` (sala eliminada).
  */
