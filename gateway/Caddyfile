@@ -1,5 +1,14 @@
-http://{$GATEWAY_HOST:localhost} {
-    redir https://{host}:{$GATEWAY_HTTPS_PORT:443}{uri} 308
+# Caddy es el router interno (ADR 0031): no publica puertos ni termina TLS. nginx
+# (reverse-proxy) recibe 80/443 y le pasa todo por HTTP en :8080 dentro de la red edge.
+{
+    servers {
+        # La IP real del cliente llega en X-Forwarded-For desde nginx (redes privadas de Compose):
+        # {client_ip} la usa el límite por IP de invitaciones (ADR 0028).
+        trusted_proxies static private_ranges
+        client_ip_headers X-Forwarded-For
+        # nginx sobrescribe X-Forwarded-For con la IP real de la conexión (un solo valor), así que
+        # no hace falta el modo estricto; Caddy no publica puertos y solo nginx le habla.
+    }
 }
 
 (service_timeout) {
@@ -7,9 +16,34 @@ http://{$GATEWAY_HOST:localhost} {
         dial_timeout 5s
         response_header_timeout 5s
     }
+    # Resiliencia (ADR 0032): tras 3 fallos en 10 s el upstream sale de rotación y se responde 503
+    # al instante en vez de esperar timeouts (corta la cascada hacia un servicio caído).
+    fail_duration 10s
+    max_fails 3
+    unhealthy_status 502 503 504
 }
 
-https://{$GATEWAY_HOST:localhost} {
+# identity-api con réplicas (ADR 0032): Docker DNS devuelve una IP por réplica; Caddy las reparte
+# por menor número de conexiones y, si una falla, reintenta la petición en otra durante 8 s.
+(identity_upstream) {
+    dynamic a {$IDENTITY_API_HOST:identity-api} {$IDENTITY_API_PORT:8081} {
+        refresh 5s
+    }
+    lb_policy least_conn
+    # Mayor que response_header_timeout (5 s): un GET que se cuelga en una réplica que se apaga
+    # aún tiene tiempo de reintentarse en otra (medido: sin esto, 1 de 400 peticiones daba 503).
+    lb_try_duration 8s
+    lb_try_interval 250ms
+    fail_duration 10s
+    max_fails 3
+    unhealthy_status 5xx
+    transport http {
+        dial_timeout 5s
+        response_header_timeout 5s
+    }
+}
+
+http://:8080 {
     @missing_correlation not header X-Correlation-ID *
     request_header @missing_correlation X-Correlation-ID {http.request.uuid}
     header X-Correlation-ID {http.request.header.X-Correlation-ID}
@@ -19,36 +53,91 @@ https://{$GATEWAY_HOST:localhost} {
     }
     log_append correlation_id {http.request.header.X-Correlation-ID}
 
-    # Canal seguro (Escenario 1, patrón Secure Channel, ADR 0029): tras la primera
-    # visita el navegador usa solo HTTPS durante un año, incluidos subdominios. Vive
-    # únicamente en el sitio HTTPS; el redirector HTTP plano no la emite.
-    header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    # HSTS y las cabeceras de seguridad del navegador las pone nginx en el borde (ADR 0029,
+    # ADR 0028, ADR 0031); aquí solo se oculta el servidor para no duplicar cabeceras.
+    header -Server
 
     handle_errors {
         @upstream_unavailable expression `{http.error.status_code} == 502 || {http.error.status_code} == 503 || {http.error.status_code} == 504`
         header @upstream_unavailable Content-Type application/json
         respond @upstream_unavailable `{"error":"service_unavailable","message":"The requested service is temporarily unavailable."}` 503
+
+        # caddy-ratelimit ya puso Retry-After en la respuesta.
+        @rate_limited expression `{http.error.status_code} == 429`
+        header @rate_limited Content-Type application/json
+        respond @rate_limited `{"error":"rate_limited","message":"Too many requests. Try again later."}` 429
     }
 
     # Rutas internas de identity-api (p. ej. /api/v1/internal/rooms/{id}/disable, ADR 0019):
-    # solo se llaman dentro de la red de compose. auth/check lo usa el propio forward_auth.
-    @internal_api {
-        path /api/v1/internal/*
-        not path /api/v1/internal/auth/check
-    }
+    # solo se llaman dentro de la red de compose. forward_auth llama a auth/check directo al
+    # upstream, sin pasar por estas rutas públicas, así que también queda oculta.
+    @internal_api path /api/v1/internal/*
     respond @internal_api 404
 
     # El preflight CORS (OPTIONS) no lleva Authorization: cada servicio lo responde.
+    # Las rutas internas no pasan por forward_auth: si pasaran, sin token darían 401 en vez de 404
+    # (forward_auth corre antes que respond, sin importar el orden del texto; ADR 0028).
     @protected {
         path /api/* /ws/*
-        not path /api/v1/healthz /api/v1/invitations/claim /api/v1/invitations/*
+        not path /api/v1/healthz /api/v1/invitations/claim /api/v1/invitations/* /api/v1/internal/*
         not method OPTIONS
     }
 
-    forward_auth @protected {$IDENTITY_API_UPSTREAM:identity-api:8081} {
-        uri /api/v1/internal/auth/check
-        copy_headers X-User-Id X-User-Sub X-User-Role X-User-Room-Id X-User-Nick
-        import service_timeout
+    # Límite de cuerpo (ADR 0028): 413 temprano por Content-Length (>= 1 000 000 bytes) sin leer el
+    # cuerpo; request_body corta además los cuerpos chunked. Las subidas de vídeo no pasan por aquí
+    # (van directo a MinIO con URL firmada, ADR 0008).
+    @body_too_large {
+        path /api/*
+        header_regexp Content-Length ^[0-9]{7,}$
+    }
+    header @body_too_large Content-Type application/json
+    respond @body_too_large `{"error":"payload_too_large","message":"The request body is too large."}` 413
+
+    @api path /api/*
+    request_body @api {
+        max_size 1MB
+    }
+
+    # Autenticación y límites de tasa (ADR 0028). Van en un route porque route respeta el orden escrito:
+    # rate_limit se ordena por defecto antes de forward_auth, y el límite por usuario debe ir después.
+    route {
+        # copy_headers solo escribe lo que devuelve identity-api: lo que mande el cliente se borra antes.
+        request_header -X-User-Id
+        request_header -X-User-Sub
+        request_header -X-User-Role
+        request_header -X-User-Room-Id
+        request_header -X-User-Nick
+
+        # Rutas sin sesión (vista previa y canje de invitaciones): por IP del cliente.
+        rate_limit {
+            zone per_ip_without_session {
+                match {
+                    path /api/v1/invitations/*
+                }
+                key {client_ip}
+                window 10s
+                events 600
+            }
+        }
+
+        forward_auth @protected {
+            uri /api/v1/internal/auth/check
+            copy_headers X-User-Id X-User-Sub X-User-Role X-User-Room-Id X-User-Nick
+            import identity_upstream
+        }
+
+        # Rutas con sesión: por usuario verificado. /ws/* queda fuera (cada canal limita sus mensajes).
+        rate_limit {
+            zone per_user {
+                match {
+                    path /api/*
+                    header X-User-Id *
+                }
+                key {http.request.header.X-User-Id}
+                window 10s
+                events 100
+            }
+        }
     }
 
     @health path /healthz
@@ -78,8 +167,8 @@ https://{$GATEWAY_HOST:localhost} {
     }
 
     @identity path /api/*
-    reverse_proxy @identity {$IDENTITY_API_UPSTREAM:identity-api:8081} {
-        import service_timeout
+    reverse_proxy @identity {
+        import identity_upstream
     }
 
     @sync path /ws/sync /ws/sync/*
