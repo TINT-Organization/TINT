@@ -37,6 +37,7 @@ Cada ADR de esta carpeta se escribió a partir de evidencia del repositorio (có
 | [0027](0027-segmentacion-de-red-por-capas.md) | Segmentación de red: una red de Compose por capa | Aceptada | 2026-11-23 | Infraestructura |
 | [0028](0028-limites-y-cabeceras-de-seguridad-en-el-gateway.md) | Límites de tasa y de tamaño y cabeceras de seguridad en el gateway (Prototipo 3, escenario 2) | Propuesta | 2026-11-23 | Infraestructura |
 | [0029](0029-hsts-y-canal-seguro-en-el-gateway.md) | HSTS en el gateway para cerrar el canal seguro (Escenario 1) | Propuesta | 2026-11-23 | Infraestructura, CI |
+| [0030](0030-tickets-por-servicio-minimo-privilegio.md) | Un ticket por servicio: audiencia propia y mínimo privilegio (Escenario 4) | Propuesta | 2026-11-23 | identity-api, sync, social, voice, stream, analytics, web, Android, infra |
 | [0031](0031-nginx-en-el-borde-y-caddy-como-router.md) | nginx en el borde y Caddy como router interno | Propuesta | 2026-11-23 | Infraestructura, CI |
 | [0032](0032-resiliencia-replicas-y-salud.md) | Resiliencia: réplicas de identity-api, salud y conmutación por error | Propuesta | 2026-11-23 | Infraestructura |
 
@@ -73,6 +74,7 @@ flowchart LR
     A20 --> A27["0027 segmentación de red por capas"]
     A20 --> A28["0028 límites y cabeceras en el gateway"]
     A20 --> A29["0029 HSTS y canal seguro (Escenario 1)"]
+    A6 --> A30["0030 un ticket por servicio (Escenario 4)"]
     A29 --> A31["0031 nginx en el borde, Caddy router"]
     A31 --> A32["0032 réplicas, salud y failover"]
 ```
