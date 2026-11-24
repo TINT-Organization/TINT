@@ -30,9 +30,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # Mapeo de servicio -> nombre de contenedor, comando de sonda y servicio esperado en el body.
 HEALTHZ_PROBES: dict[str, dict[str, str | list[str]]] = {
+    "reverse-proxy": {
+        "container": "tint-reverse-proxy",
+        "cmd": ["wget", "-qO-", "http://127.0.0.1/healthz"],
+        "service": "reverse-proxy",
+    },
     "gateway": {
         "container": "tint-gateway",
-        "cmd": ["wget", "-qO-", "--no-check-certificate", "https://localhost/healthz"],
+        "cmd": ["wget", "-qO-", "http://localhost:8080/healthz"],
         "service": "gateway",
     },
     "web": {
