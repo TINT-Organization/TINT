@@ -71,7 +71,8 @@ int main() {
       service_config, peers, room_store, identity_client, wall_ms,
       [&workers](std::function<void()> job) { boost::asio::post(workers, std::move(job)); });
 
-  auth::TokenVerifier verifier(config->jwt_secret, config->jwt_issuer, config->jwt_audience);
+  auth::TokenVerifier verifier(config->jwt_secret, config->jwt_issuer, config->jwt_audience,
+                               config->jwt_legacy_audience);
   http::Handler handler({verifier, revocation, room_store, svc,
                          ice::IceConfig{config->stun_urls, config->turn_urls, config->turn_secret,
                                         std::chrono::seconds(config->turn_ttl_s)},

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Prueba rápida de stream-core levantado (solo stdlib).
 
-Uso:  python3 services/stream-core/scripts/smoke.py [--url http://localhost:8086] [--secret ...]
+Uso:  python3 services/stream-core/scripts/smoke.py [--url http://localhost:8086] [--secret ...] [--audience ...]
+La audiencia por defecto es JWT_AUDIENCE del entorno o tint:stream (la propia del servicio, ADR 0030).
 Recorre la tabla de respuestas de WHIP/WHEP (dominio-transmision §3) con tokens HS256 firmados
 aquí, habilitando una sala por la ruta interna /internal/events/start/{id}.
 """
@@ -10,6 +11,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -31,11 +33,14 @@ def b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-def token(secret, room, role="participant", sub=None, exp_delta=3600):
+AUDIENCE = os.environ.get("JWT_AUDIENCE") or "tint:stream"
+
+
+def token(secret, room, role="participant", sub=None, exp_delta=3600, aud=None):
     header = b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
     payload = b64(json.dumps({
         "sub": sub or f"guest:{uuid.uuid4()}", "room_id": room, "role": role, "nick": "smoke",
-        "jti": str(uuid.uuid4()), "iss": "tint-identity", "aud": "tint:room",
+        "jti": str(uuid.uuid4()), "iss": "tint-identity", "aud": aud or AUDIENCE,
         "exp": int(time.time()) + exp_delta,
     }).encode())
     sig = hmac.new(secret.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
@@ -59,6 +64,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://localhost:8086")
     ap.add_argument("--secret", default="test-secret")
+    ap.add_argument("--audience", default=AUDIENCE)
     a = ap.parse_args()
     room = f"smoke-{uuid.uuid4()}"
     base = f"{a.url}/api/v1/stream/rooms/{room}"
@@ -72,13 +78,15 @@ def main():
 
     check("healthz", call(f"{a.url}/healthz")[0], 200)
     check("sin token -> 401", call(f"{base}/whep", "POST", None, OFFER_WHEP, "application/sdp")[0], 401)
-    guest = token(a.secret, room)
+    guest = token(a.secret, room, aud=a.audience)
     check("sala sin transmisión -> 404", call(f"{base}/whep", "POST", guest, OFFER_WHEP, "application/sdp")[0], 404)
     check("alta interna -> 200", call(f"{a.url}/internal/events/start/{room}", "POST", None, "{}", "application/json")[0], 200)
     check("participante publica -> 403", call(f"{base}/whip", "POST", guest, OFFER_WHEP, "application/sdp")[0], 403)
     check("content-type -> 415", call(f"{base}/whep", "POST", guest, OFFER_WHEP, "text/plain")[0], 415)
     check("sdp basura -> 400", call(f"{base}/whep", "POST", guest, "hola", "application/sdp")[0], 400)
-    check("token caducado -> 401", call(f"{base}/whep", "POST", token(a.secret, room, exp_delta=-5), OFFER_WHEP, "application/sdp")[0], 401)
+    other = token(a.secret, room, aud="tint:sync")
+    check("ticket de otro servicio -> 401 (ADR 0030)", call(f"{base}/whep", "POST", other, OFFER_WHEP, "application/sdp")[0], 401)
+    check("token caducado -> 401", call(f"{base}/whep", "POST", token(a.secret, room, aud=a.audience, exp_delta=-5), OFFER_WHEP, "application/sdp")[0], 401)
     status, headers, body = call(f"{base}/whep", "POST", guest, OFFER_WHEP, "application/sdp")
     check("WHEP -> 201", status, 201)
     check("WHEP devuelve SDP", body.startswith("v=0"), True)

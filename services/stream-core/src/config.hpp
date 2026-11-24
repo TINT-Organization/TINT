@@ -18,7 +18,8 @@ struct Config {
   std::string redis_url;
   std::string jwt_secret;
   std::string jwt_issuer = "tint-identity";
-  std::string jwt_audience = "tint:room";
+  std::string jwt_audience = "tint:stream";  // audiencia propia (ADR 0030)
+  std::string jwt_legacy_audience;           // transición: vacía = desactivada
   std::vector<std::string> allowed_origins;
   int max_viewers = 50;
   std::int64_t host_grace_s = 60;

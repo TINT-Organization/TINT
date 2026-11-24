@@ -48,7 +48,7 @@ struct Options {
   std::string port = "8086";
   std::string secret = "dev-secret-change-in-prod";
   std::string issuer = "tint-identity";
-  std::string audience = "tint:room";
+  std::string audience = "tint:stream";  // audiencia propia (ADR 0030); JWT_AUDIENCE la cambia
   std::string room;
   int viewers = 50;
   int duration_s = 30;
