@@ -46,7 +46,8 @@ HEALTHZ_PROBES: dict[str, dict[str, str | list[str]]] = {
         "service": "web",
     },
     "identity-api": {
-        "container": "tint-identity-api",
+        # Con réplicas (ADR 0032) no hay container_name: se toma la primera réplica de Compose.
+        "container": "",
         "cmd": [
             "node",
             "-e",
@@ -143,6 +144,13 @@ def run_cmd(
     )
 
 
+def compose_container(service: str) -> str:
+    """ID del primer contenedor de un servicio de Compose (para servicios con réplicas)."""
+    res = run_cmd(["docker", "compose", "ps", "-q", service], check=False)
+    ids = res.stdout.split()
+    return ids[0] if ids else service
+
+
 def docker_inspect_health(container: str) -> str:
     res = run_cmd(
         ["docker", "inspect", "--format", "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}", container],
@@ -203,7 +211,7 @@ def verify_ac1_healthz(target_services: set[str]) -> list[str]:
         if not probe_info:
             continue
 
-        container = str(probe_info["container"])
+        container = str(probe_info["container"]) or compose_container(svc)
         status = docker_inspect_health(container)
         if status != "healthy":
             errors.append(f"{svc} ({container}) no está healthy según docker inspect (estado: {status})")

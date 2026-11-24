@@ -38,6 +38,7 @@ Cada ADR de esta carpeta se escribió a partir de evidencia del repositorio (có
 | [0028](0028-limites-y-cabeceras-de-seguridad-en-el-gateway.md) | Límites de tasa y de tamaño y cabeceras de seguridad en el gateway (Prototipo 3, escenario 2) | Propuesta | 2026-11-23 | Infraestructura |
 | [0029](0029-hsts-y-canal-seguro-en-el-gateway.md) | HSTS en el gateway para cerrar el canal seguro (Escenario 1) | Propuesta | 2026-11-23 | Infraestructura, CI |
 | [0031](0031-nginx-en-el-borde-y-caddy-como-router.md) | nginx en el borde y Caddy como router interno | Propuesta | 2026-11-23 | Infraestructura, CI |
+| [0032](0032-resiliencia-replicas-y-salud.md) | Resiliencia: réplicas de identity-api, salud y conmutación por error | Propuesta | 2026-11-23 | Infraestructura |
 
 ```mermaid
 flowchart LR
@@ -73,6 +74,7 @@ flowchart LR
     A20 --> A28["0028 límites y cabeceras en el gateway"]
     A20 --> A29["0029 HSTS y canal seguro (Escenario 1)"]
     A29 --> A31["0031 nginx en el borde, Caddy router"]
+    A31 --> A32["0032 réplicas, salud y failover"]
 ```
 
 ## Formato

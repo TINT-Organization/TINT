@@ -30,14 +30,13 @@ class GatewayConfigTests(unittest.TestCase):
 
         self.assertIn("path /api/* /ws/*", caddyfile)
         self.assertIn("not path /api/v1/healthz /api/v1/invitations/claim", caddyfile)
-        self.assertIn("forward_auth @protected {$IDENTITY_API_UPSTREAM:identity-api:8081}", caddyfile)
+        # identity-api con réplicas (ADR 0032): forward_auth y la ruta usan el upstream balanceado.
+        self.assertIn("forward_auth @protected {", caddyfile)
+        self.assertIn("dynamic a {$IDENTITY_API_HOST:identity-api} {$IDENTITY_API_PORT:8081}", caddyfile)
         self.assertIn("uri /api/v1/internal/auth/check", caddyfile)
         self.assertIn("copy_headers X-User-Id X-User-Sub X-User-Role X-User-Room-Id X-User-Nick", caddyfile)
         self.assertIn("import service_timeout", caddyfile)
-        self.assertIn(
-            "reverse_proxy @identity {$IDENTITY_API_UPSTREAM:identity-api:8081}",
-            caddyfile,
-        )
+        self.assertIn("reverse_proxy @identity {\n        import identity_upstream", caddyfile)
         self.assertIn("reverse_proxy @sync {$SYNC_CORE_UPSTREAM:sync-core:8080}", caddyfile)
         self.assertIn("reverse_proxy @social {$SOCIAL_CORE_UPSTREAM:social-core:8082}", caddyfile)
         self.assertIn("reverse_proxy @analytics {$ANALYTICS_UPSTREAM:analytics:8084}", caddyfile)
