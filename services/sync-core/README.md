@@ -74,7 +74,7 @@ flowchart LR
 | `internal/config` | Lee el entorno con un `getenv` inyectable; exige `JWT_SECRET` y valida `ROOM_TTL` y `CONTROL_HANDOFF_AFTER`. | [`config.go`](internal/config/config.go) |
 | `internal/server` | Arma las dependencias (Redis, bus, telemetría, store, hub) y expone `GET /healthz`, `GET /ws/sync` y `GET /metrics`. Apagado ordenado. | [`server.go`](internal/server/server.go) |
 | `internal/ws` | Handshake: valida query, token, revocación y sala deshabilitada; hace el upgrade y cierra con `4001`/`4003`/`4010` en los casos terminales. Una goroutine lectora y una escritora por conexión. | [`handler.go`](internal/ws/handler.go) |
-| `internal/auth` | Verifica tokens HS256 (`iss`, `aud`, `exp`, `room_id`, rol) y distingue "expirado pero bien firmado" (`ErrTokenExpired`). | [`auth.go`](internal/auth/auth.go) |
+| `internal/auth` | Verifica tokens HS256 (`iss`, `aud` propia o legada —string o lista—, `exp`, `room_id`, rol) y distingue "expirado pero bien firmado" (`ErrTokenExpired`). | [`auth.go`](internal/auth/auth.go) |
 | `internal/hub` | Salas locales y su caché de estado, `Connect`/`Disconnect`, `Handle` (comandos, `SYNC_CHECK`, `BUFFERING`), `Deliver` desde el bus, bucles de `HEARTBEAT` y de barrido de presencia, delegación y revocación. | [`hub.go`](internal/hub/hub.go), [`client.go`](internal/hub/client.go), [`heartbeat.go`](internal/hub/heartbeat.go) |
 | `internal/master` | Reloj Maestro sin I/O: `State`, `PositionAt`, `Apply` (incluido el re-anclaje de `VOLUME`/`QUALITY`). | [`state.go`](internal/master/state.go) |
 | `internal/drift` | `UpdateRTT` (EWMA α = 0,2) y `Check` (umbral 500 ms, `rate` hasta 2000 ms, `seek` por encima o en pausa). | [`drift.go`](internal/drift/drift.go) |
@@ -388,7 +388,8 @@ Fuente: [`internal/config/config.go`](internal/config/config.go), [`docker-compo
 | `REDIS_URL` | `redis://localhost:6379` | Redis de estado, Pub/Sub y streams. Debe responder al `PING` de arranque (3 s). |
 | `JWT_SECRET` | — (obligatoria) | Secreto HS256 compartido con identity-api. Sin él no arranca. |
 | `JWT_ISSUER` | `tint-identity` | `iss` esperado. |
-| `JWT_AUDIENCE` | `tint:room` | `aud` esperado. |
+| `JWT_AUDIENCE` | `tint:room` | Audiencia propia (`tint:sync` en Compose, ADR 0030). |
+| `JWT_LEGACY_AUDIENCE` | vacía | Audiencia legada aceptada durante la transición (`tint:room`); vacía = desactivada. |
 | `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | Patrones de host permitidos en el handshake. En docker compose se toma de `SYNC_ALLOWED_ORIGINS`. |
 | `ROOM_TTL` | `12h` | Periodo de gracia de la sala (duración Go positiva). |
 | `CONTROL_HANDOFF_AFTER` | `5m` | Tiempo sin host/cohost antes de delegar el control. |
