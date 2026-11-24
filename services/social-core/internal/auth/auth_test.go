@@ -96,6 +96,61 @@ func TestGuestConfigDefaults(t *testing.T) {
 	}
 }
 
+// AC1 de ADR 0030: social-core solo acepta tickets HS256 con su propia
+// audiencia (JWT_AUDIENCE, tint:social en Compose) y, durante la transición,
+// la de JWT_LEGACY_AUDIENCE si tiene valor. Otra audiencia = token inválido.
+func TestVerifyGuestAudiencePerService(t *testing.T) {
+	const own, legacy = "tint:social", "tint:room"
+	now := time.Now()
+	tests := []struct {
+		name   string
+		legacy string
+		aud    any
+		ok     bool
+	}{
+		{"propia", "", own, true},
+		{"propia en lista", "", []string{"tint:otra", own}, true},
+		{"sync", legacy, "tint:sync", false},
+		{"voice", legacy, "tint:voice", false},
+		{"stream", legacy, "tint:stream", false},
+		{"analytics", legacy, "tint:analytics", false},
+		{"api", legacy, "tint:api", false},
+		{"lista sin la propia", legacy, []string{"tint:sync", "tint:voice"}, false},
+		{"lista vacía", legacy, []string{}, false},
+		{"vacía con la variable vacía", "", "", false},
+		{"legada con la variable vacía", "", legacy, false},
+		{"legada en lista con la variable vacía", "", []string{legacy}, false},
+		{"legada con la variable definida", legacy, legacy, true},
+		{"legada en lista con la variable definida", legacy, []string{"tint:voice", legacy}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := GuestConfig{Secret: "secret", Issuer: "tint-identity", Audience: own, LegacyAudience: tt.legacy}
+			tok := signGuest(guestClaims(now, func(c map[string]any) { c["aud"] = tt.aud }), "secret")
+			_, err := VerifyGuest(tok, cfg, "r1", now)
+			if tt.ok && err != nil {
+				t.Fatalf("aud %v debe aceptarse: %v", tt.aud, err)
+			}
+			if !tt.ok && err != ErrInvalidToken {
+				t.Fatalf("aud %v: err = %v, want ErrInvalidToken", tt.aud, err)
+			}
+		})
+	}
+}
+
+// Un ticket de otro servicio ya vencido es inválido (401), no expirado (4003).
+func TestVerifyGuestExpiredForeignAudience(t *testing.T) {
+	now := time.Now()
+	cfg := GuestConfig{Secret: "secret", Audience: "tint:social", LegacyAudience: "tint:room"}
+	tok := signGuest(guestClaims(now, func(c map[string]any) {
+		c["aud"] = "tint:voice"
+		c["exp"] = now.Add(-time.Minute).Unix()
+	}), "secret")
+	if _, err := VerifyGuest(tok, cfg, "r1", now); err != ErrInvalidToken {
+		t.Fatalf("err = %v, want ErrInvalidToken", err)
+	}
+}
+
 func TestVerifyGuestRejectsEmptySecret(t *testing.T) {
 	now := time.Now()
 	token := signGuest(guestClaims(now, nil), "")

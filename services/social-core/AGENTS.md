@@ -126,18 +126,18 @@ Códigos de `error`: `INVALID_PAYLOAD` (también opción de trivia fuera de rang
 **Recap:** pausas = `PAUSE`; rebobinados = `SEEK` que cae más de 1 s por debajo de la posición proyectada del ancla previa (`last_pos`; si se reproducía, avanza con `updated_at_ms` y `rate`). Los eventos con `version` menor que el ancla llegaron tarde y no la mueven. Solo se cuentan los eventos que ve alguna réplica con clientes en la sala (la suscripción existe mientras haya conexiones). Empates: bucket más temprano y `user_id` menor. Sin Redis, láser funciona en una réplica; encuestas y recap responden `UNAVAILABLE`.
 
 ## Autenticación de `/ws/social`
-El verificador se elige por el `alg` del header del token; nada se acepta sin firma válida y todo falla cerrado.
+El verificador se elige por el `alg` del header del token; nada se acepta sin firma válida y todo falla cerrado. Con ADR 0030 cada servicio tiene su audiencia: un ticket emitido para otro servicio nunca abre `/ws/social` ni `GET …/chat`.
 
 | Token | Quién | Verificación |
 | :--- | :--- | :--- |
-| HS256 (guest token o sync-ticket de identity-api) | Invitado | Firma con `JWT_SECRET`, `iss` = `JWT_ISSUER`, `aud` = `JWT_AUDIENCE`, `exp` obligatorio, `sub` y `jti` no vacíos, `room_id` = sala (si no, 403). Un HS256 inválido **no** cae al camino de host. |
+| HS256 (guest token, sync-ticket o ticket `social` de identity-api) | Invitado | Firma con `JWT_SECRET`, `iss` = `JWT_ISSUER`, `aud` (string o lista, RFC 7519) que contenga `JWT_AUDIENCE` (`tint:social` en Compose) o, solo si tiene valor, `JWT_LEGACY_AUDIENCE` (`tint:room` durante la transición de [ADR 0030](../../docs/adr/0030-tickets-por-servicio-minimo-privilegio.md)), `exp` obligatorio, `sub` y `jti` no vacíos, `room_id` = sala (si no, 403). Un HS256 inválido **no** cae al camino de host. |
 | RS256 (Firebase ID token) | Host | Firma contra el certificado del `kid` ([certificados públicos de Google](https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com), caché según `Cache-Control max-age`, refetch ante `kid` desconocido como mucho 1/min); `iss` = `https://securetoken.google.com/<FIREBASE_PROJECT_ID>`, `aud` = `FIREBASE_PROJECT_ID`, `exp` e `iat` obligatorios, `sub` no vacío. Sin `FIREBASE_PROJECT_ID` o sin certificados → 401. |
 
 **Handshake ([ADR 0014](../../docs/adr/0014-upgrade-y-cierre-4xxx-para-estados-terminales.md)):** los estados terminales hacen upgrade y cierran con un código `4xxx` (el `Origin` se comprueba antes, en el upgrade: fuera de `ALLOWED_ORIGINS` → 403):
 
 | Situación | Respuesta |
 | :--- | :--- |
-| Sin token, firma inválida, `iss`/`aud` incorrectos o `alg` desconocido | `401` sin upgrade |
+| Sin token, firma inválida, `iss`/`aud` incorrectos (incluido el ticket de otro servicio: `tint:sync`, `tint:voice`, `tint:stream`, `tint:analytics`, `tint:api`, aunque esté caducado) o `alg` desconocido | `401` sin upgrade |
 | HS256 de otra sala (aunque esté caducado) | `403` sin upgrade |
 | Bien firmado y de la sala, pero caducado | Upgrade + cierre **`4003`** `TOKEN_EXPIRED` |
 | `EXISTS token:revoked:{jti}` | Upgrade + cierre **`4001`** `REVOKED` |
@@ -149,7 +149,7 @@ El verificador se elige por el `alg` del header del token; nada se acepta sin fi
 ## REST
 | Ruta | Quién | Éxito | Errores |
 | :--- | :--- | :--- | :--- |
-| `GET /api/v1/social/rooms/{id}/chat` (`Authorization: Bearer <sync-ticket>`) | Host/cohost de esa sala (HS256); también con la sala deshabilitada (HU-LIVE-09 AC3) | `200 {"room_id","messages":[chat_message…]}`: los mismos objetos del WebSocket, del más antiguo al más nuevo, máx. 100 (mientras dure la clave: 12 h) | `401 {"error":"UNAUTHORIZED"}` (sin token, firma inválida, caducado o revocado) · `403 {"error":"FORBIDDEN"}` (participante, Firebase ID token o sala ajena) · `503 {"error":"UNAVAILABLE"}` (sin Redis o Redis caído) |
+| `GET /api/v1/social/rooms/{id}/chat` (`Authorization: Bearer <sync-ticket>`) | Host/cohost de esa sala (HS256); también con la sala deshabilitada (HU-LIVE-09 AC3) | `200 {"room_id","messages":[chat_message…]}`: los mismos objetos del WebSocket, del más antiguo al más nuevo, máx. 100 (mientras dure la clave: 12 h) | `401 {"error":"UNAUTHORIZED"}` (sin token, firma inválida, audiencia de otro servicio, caducado o revocado) · `403 {"error":"FORBIDDEN"}` (participante, Firebase ID token o sala ajena) · `503 {"error":"UNAVAILABLE"}` (sin Redis o Redis caído) |
 
 Sin cabeceras CORS: como `/ws/social`, se sirve por el gateway en el mismo origen que la web.
 
@@ -178,7 +178,8 @@ Contrato: [docs/contrato-eventos-analitica.md](../../docs/contrato-eventos-anali
 | `SOCIAL_CORE_ADDR` | `:8082` | Dirección de escucha |
 | `JWT_SECRET` | — (**obligatoria**: sin ella no arranca) | Secreto HS256 compartido con identity-api |
 | `JWT_ISSUER` | `tint-identity` | `iss` esperado en tokens HS256 |
-| `JWT_AUDIENCE` | `tint:room` | `aud` esperado en tokens HS256 |
+| `JWT_AUDIENCE` | `tint:room` | Audiencia propia de social-core en tokens HS256; Compose le da `tint:social` (ADR 0030) |
+| `JWT_LEGACY_AUDIENCE` | vacía | Audiencia legada aceptada además de la propia durante la transición de ADR 0030 (`tint:room`). Vacía = desactivada: solo vale `JWT_AUDIENCE`. No afecta a los Firebase ID tokens |
 | `FIREBASE_PROJECT_ID` | — (vacía = se rechazan los host tokens) | Proyecto Firebase de los host tokens |
 | `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | Patrones de origen (host[:puerto]) aceptados en el handshake; en compose sale de `SOCIAL_ALLOWED_ORIGINS` |
 | `REDIS_URL` | — (vacía = memoria, una réplica) | Historial, Pub/Sub entre réplicas, revocación, encuestas, recap, moderación del chat, trivias y analítica |

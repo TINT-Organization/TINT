@@ -44,6 +44,9 @@ type GuestConfig struct {
 	Secret   string
 	Issuer   string // vacío = DefaultIssuer
 	Audience string // vacío = DefaultAudience
+	// LegacyAudience se acepta además de Audience durante la transición de
+	// ADR 0030 (JWT_LEGACY_AUDIENCE). Vacía = desactivada (falla cerrado).
+	LegacyAudience string
 }
 
 type guestPayload struct {
@@ -57,19 +60,21 @@ type guestPayload struct {
 	Exp    int64           `json:"exp"`
 }
 
-// hasAudience acepta aud como texto o arreglo de textos (RFC 7519 §4.1.3).
-func hasAudience(raw json.RawMessage, want string) bool {
+// hasAudience acepta aud como texto o arreglo de textos (RFC 7519 §4.1.3) si
+// alguno es una de las audiencias aceptadas. Una aceptada vacía nunca vale.
+func hasAudience(raw json.RawMessage, accepted ...string) bool {
+	var many []string
 	var one string
 	if json.Unmarshal(raw, &one) == nil {
-		return one == want
-	}
-	var many []string
-	if json.Unmarshal(raw, &many) != nil {
+		many = []string{one}
+	} else if json.Unmarshal(raw, &many) != nil {
 		return false
 	}
 	for _, a := range many {
-		if a == want {
-			return true
+		for _, want := range accepted {
+			if want != "" && a == want {
+				return true
+			}
 		}
 	}
 	return false
@@ -104,7 +109,10 @@ func VerifyGuest(token string, cfg GuestConfig, wantRoom string, now time.Time) 
 	if audience == "" {
 		audience = DefaultAudience
 	}
-	if p.Sub == "" || p.JTI == "" || p.Iss != issuer || !hasAudience(p.Aud, audience) || p.Exp == 0 {
+	// Audiencia propia del servicio o, en la transición, la legada (ADR 0030).
+	// Se comprueba antes que exp: un ticket ajeno vencido es inválido (401),
+	// nunca "expirado" (4003).
+	if p.Sub == "" || p.JTI == "" || p.Iss != issuer || !hasAudience(p.Aud, audience, cfg.LegacyAudience) || p.Exp == 0 {
 		return Claims{}, ErrInvalidToken
 	}
 	// La sala va antes que exp: ErrExpired solo sale para un token bien

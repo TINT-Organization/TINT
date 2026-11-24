@@ -65,9 +65,12 @@ type Deps struct {
 	IsLive          func(ctx context.Context, roomID string) (bool, error)
 	StreamStartedAt func(ctx context.Context, roomID string) (int64, bool, error)
 	// Auth
-	JWTSecret         string
-	JWTIssuer         string // vacío = auth.DefaultIssuer
-	JWTAudience       string // vacío = auth.DefaultAudience
+	JWTSecret   string
+	JWTIssuer   string // vacío = auth.DefaultIssuer
+	JWTAudience string // vacío = auth.DefaultAudience
+	// JWTLegacyAudience (JWT_LEGACY_AUDIENCE) se acepta además de la propia
+	// durante la transición de ADR 0030. Vacía = desactivada.
+	JWTLegacyAudience string
 	FirebaseProjectID string
 	// HostKeys resuelve las claves públicas de Firebase por kid. Nil o sin
 	// FirebaseProjectID = los host tokens se rechazan (falla cerrado).
@@ -402,7 +405,7 @@ func (d *Deps) authenticate(ctx context.Context, token, roomID string) (auth.Cla
 	now := d.now()
 	switch auth.TokenAlg(token) {
 	case "HS256":
-		cfg := auth.GuestConfig{Secret: d.JWTSecret, Issuer: d.JWTIssuer, Audience: d.JWTAudience}
+		cfg := auth.GuestConfig{Secret: d.JWTSecret, Issuer: d.JWTIssuer, Audience: d.JWTAudience, LegacyAudience: d.JWTLegacyAudience}
 		return auth.VerifyGuest(token, cfg, roomID, now)
 	case "RS256":
 		return auth.VerifyHost(ctx, token, d.FirebaseProjectID, d.HostKeys, now)
