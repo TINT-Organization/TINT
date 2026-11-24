@@ -274,6 +274,9 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      # ADR 0030 (transición): audiencia legada aceptada hasta que web y Android pidan tickets por
+      # servicio. La vacía el PR que cierra la transición.
+      JWT_LEGACY_AUDIENCE: ${JWT_LEGACY_AUDIENCE:-tint:room}
       ANALYTICS_PORT: ${ANALYTICS_PORT:-8084}
       # Orígenes (con esquema) que pueden llamar a la API desde el navegador.
       ANALYTICS_ALLOWED_ORIGINS: ${ANALYTICS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
@@ -338,6 +341,9 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      # ADR 0030 (transición): audiencia legada aceptada hasta que web y Android pidan tickets por
+      # servicio. La vacía el PR que cierra la transición.
+      JWT_LEGACY_AUDIENCE: ${JWT_LEGACY_AUDIENCE:-tint:room}
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-tint-login}
       # Orígenes (host[:puerto]) que pueden abrir /ws/social.
       ALLOWED_ORIGINS: ${SOCIAL_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173,localhost}
@@ -381,6 +387,9 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      # ADR 0030 (transición): audiencia legada aceptada hasta que web y Android pidan tickets por
+      # servicio. La vacía el PR que cierra la transición.
+      JWT_LEGACY_AUDIENCE: ${JWT_LEGACY_AUDIENCE:-tint:room}
       ALLOWED_ORIGINS: ${SYNC_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173,localhost}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
@@ -424,6 +433,10 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      # ADR 0030 (transición): audiencia legada aceptada hasta que web y Android pidan tickets por
+      # servicio. La vacía el PR que cierra la transición.
+      JWT_LEGACY_AUDIENCE: ${JWT_LEGACY_AUDIENCE:-tint:room}
+      SERVICE_TICKET_TTL_SECONDS: ${SERVICE_TICKET_TTL_SECONDS:-600}
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-tint-login}
       # Solo desarrollo (ADR 0024): acepta los ID tokens sin firma del emulador. Vacío = Firebase real.
       FIREBASE_AUTH_EMULATOR_HOST: ${FIREBASE_AUTH_EMULATOR_HOST:-}
@@ -461,6 +474,9 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      # ADR 0030 (transición): audiencia legada aceptada hasta que web y Android pidan tickets por
+      # servicio. La vacía el PR que cierra la transición.
+      JWT_LEGACY_AUDIENCE: ${JWT_LEGACY_AUDIENCE:-tint:room}
       ALLOWED_ORIGINS: ${VOICE_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173,localhost}
       VOICE_MAX_MEMBERS: ${VOICE_MAX_MEMBERS:-8}
       STUN_URLS: ${STUN_URLS:-stun:localhost:3478}
@@ -563,6 +579,9 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      # ADR 0030 (transición): audiencia legada aceptada hasta que web y Android pidan tickets por
+      # servicio. La vacía el PR que cierra la transición.
+      JWT_LEGACY_AUDIENCE: ${JWT_LEGACY_AUDIENCE:-tint:room}
       ALLOWED_ORIGINS: ${STREAM_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173,localhost}
       IDENTITY_API_URL: http://identity-api:8081
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET}
