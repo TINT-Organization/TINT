@@ -17,14 +17,15 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Config{
-		Addr:           ":8080",
-		RedisURL:       "redis://localhost:6379",
-		JWTSecret:      "s3cr3t",
-		JWTIssuer:      "tint-identity",
-		JWTAudience:    "tint:room",
-		AllowedOrigins: []string{"localhost:5173", "127.0.0.1:5173"}, // Vite en ambos hosts locales
-		RoomTTL:        12 * time.Hour,
-		HandoffAfter:   5 * time.Minute,
+		Addr:              ":8080",
+		RedisURL:          "redis://localhost:6379",
+		JWTSecret:         "s3cr3t",
+		JWTIssuer:         "tint-identity",
+		JWTAudience:       "tint:room",
+		JWTLegacyAudience: "",                                           // vacía = sin audiencia legada (falla cerrado)
+		AllowedOrigins:    []string{"localhost:5173", "127.0.0.1:5173"}, // Vite en ambos hosts locales
+		RoomTTL:           12 * time.Hour,
+		HandoffAfter:      5 * time.Minute,
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Errorf("Load() =\n %+v\nwant\n %+v", c, want)
@@ -38,6 +39,7 @@ func TestLoadOverrides(t *testing.T) {
 		"JWT_SECRET":            "x",
 		"JWT_ISSUER":            "iss",
 		"JWT_AUDIENCE":          "aud",
+		"JWT_LEGACY_AUDIENCE":   "tint:room",
 		"ALLOWED_ORIGINS":       "tint.app, localhost:5173 ,",
 		"ROOM_TTL":              "30m",
 		"CONTROL_HANDOFF_AFTER": "90s",
@@ -45,7 +47,7 @@ func TestLoadOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Addr != ":9090" || c.RedisURL != "redis://redis:6379/1" || c.JWTIssuer != "iss" || c.JWTAudience != "aud" || c.RoomTTL != 30*time.Minute || c.HandoffAfter != 90*time.Second {
+	if c.Addr != ":9090" || c.RedisURL != "redis://redis:6379/1" || c.JWTIssuer != "iss" || c.JWTAudience != "aud" || c.JWTLegacyAudience != "tint:room" || c.RoomTTL != 30*time.Minute || c.HandoffAfter != 90*time.Second {
 		t.Errorf("overrides no aplicados: %+v", c)
 	}
 	if !reflect.DeepEqual(c.AllowedOrigins, []string{"tint.app", "localhost:5173"}) {

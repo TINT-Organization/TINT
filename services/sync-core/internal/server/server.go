@@ -61,7 +61,7 @@ func Run(ctx context.Context, getenv func(string) string) error {
 	reg.CounterFunc("sync_telemetry_dropped_total", "Muestras de drift descartadas por buffer lleno.", func() float64 { return float64(tel.Dropped()) })
 	reg.CounterFunc("sync_telemetry_failed_total", "Muestras de drift que no se pudieron escribir en Redis.", func() float64 { return float64(tel.Failed()) })
 
-	verifier := auth.NewVerifier(cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTAudience)
+	verifier := auth.NewVerifier(cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTAudience, cfg.JWTLegacyAudience)
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           NewRouterWithDeps(ws.NewHandler(h, verifier, st, cfg.AllowedOrigins), reg.Handler(), st),

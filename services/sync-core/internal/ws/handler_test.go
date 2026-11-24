@@ -59,16 +59,22 @@ func newServerWithGate(t *testing.T, heartbeat time.Duration, gate func(*store.S
 	if gate != nil {
 		g = gate(st)
 	}
-	ts := httptest.NewServer(NewHandler(h, auth.NewVerifier(secret, "tint-identity", "tint:room"), g, []string{"tint.app"}))
+	ts := httptest.NewServer(NewHandler(h, auth.NewVerifier(secret, "tint-identity", "tint:room", ""), g, []string{"tint.app"}))
 	t.Cleanup(ts.Close)
 	return &server{url: ts.URL, mr: mr}
 }
 
 func token(t *testing.T, role, roomID string) string {
 	t.Helper()
+	return tokenAud(t, role, roomID, "tint:room")
+}
+
+// tokenAud firma un token con la audiencia dada (ADR 0030: una por servicio).
+func tokenAud(t *testing.T, role, roomID, aud string) string {
+	t.Helper()
 	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub": "u-" + role, "room_id": roomID, "role": role, "nick": role,
-		"iss": "tint-identity", "aud": "tint:room", "exp": time.Now().Add(time.Hour).Unix(),
+		"iss": "tint-identity", "aud": aud, "exp": time.Now().Add(time.Hour).Unix(),
 	}).SignedString([]byte(secret))
 	if err != nil {
 		t.Fatal(err)
@@ -135,6 +141,9 @@ func TestHandshakeRejections(t *testing.T) {
 		{"sin token", s.url + "/?room_id=" + room, http.StatusBadRequest},
 		{"token inválido", s.url + "/?room_id=" + room + "&token=basura", http.StatusUnauthorized},
 		{"token de otra sala", s.url + "/?room_id=" + room + "&token=" + token(t, "host", "otra"), http.StatusForbidden},
+		// AC1 de ADR 0030: el ticket de otro servicio es un token inválido aquí.
+		{"ticket de voice-core", s.url + "/?room_id=" + room + "&token=" + tokenAud(t, "host", room, "tint:voice"), http.StatusUnauthorized},
+		{"ticket de analytics", s.url + "/?room_id=" + room + "&token=" + tokenAud(t, "host", room, "tint:analytics"), http.StatusUnauthorized},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
