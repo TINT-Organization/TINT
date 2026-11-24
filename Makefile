@@ -79,7 +79,7 @@ test-stream:
 
 # Prueba rápida contra stream-core levantado (docker compose up -d stream-core).
 smoke-stream:
-	python3 -I services/stream-core/scripts/smoke.py --url http://localhost:8086 --secret $${JWT_SECRET:-dev-secret-change-in-prod}
+	JWT_AUDIENCE=tint:stream python3 -I services/stream-core/scripts/smoke.py --url http://localhost:8086 --secret $${JWT_SECRET:-dev-secret-change-in-prod}
 
 # Spike S2: publicador VP8 simulcast + VIEWERS bots WHEP (libdatachannel) contra stream-core en :8086.
 # Si no está arriba, levanta redis + stream-core con compose y los baja al terminar. VIEWERS=50 DURATION=30.
@@ -90,7 +90,7 @@ load-stream:
 load-voice:
 	docker run --rm --network host -v $(PWD)/services/voice-core/loadtest:/lt:ro grafana/k6:0.54.0 run \
 	  -e BASE_URL=ws://localhost:8085 -e JWT_SECRET=$${JWT_SECRET:-$$(grep -E '^JWT_SECRET=' .env 2>/dev/null | cut -d= -f2-)} \
-	  -e VUS=$${VUS:-50} -e DURATION=$${DURATION:-20s} /lt/voice.js
+	  -e JWT_AUDIENCE=tint:voice -e VUS=$${VUS:-50} -e DURATION=$${DURATION:-20s} /lt/voice.js
 
 # E2E de la voz con dos Chromium reales (ruta libre y solo TURN). Requiere la web, voice-core y coturn.
 e2e-voice:
