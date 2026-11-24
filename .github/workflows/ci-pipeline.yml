@@ -107,11 +107,25 @@ jobs:
           cp .env.example .env
           docker compose config --quiet
           docker compose -f docker-compose.yml -f docker-compose.production.yml config --quiet
+      # El gateway usa directivas de caddy-ratelimit (ADR 0028): se valida con la imagen compilada,
+      # no con caddy:2.9-alpine, que no las reconoce.
+      - name: Build gateway image
+        run: docker build -t tint-gateway:ci gateway
       - name: Validate Caddy configuration
         run: >-
           docker run --rm
           -v "$PWD/gateway/Caddyfile:/etc/caddy/Caddyfile:ro"
-          caddy:2.9-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          tint-gateway:ci caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      # Borde nginx (ADR 0031): la imagen renderiza la plantilla y nginx -t la valida.
+      - name: Build reverse-proxy image
+        run: docker build -t tint-reverse-proxy:ci reverse-proxy
+      - name: Validate nginx configuration
+        run: >-
+          docker run --rm
+          --add-host gateway:127.0.0.1 --add-host minio:127.0.0.1
+          -e GATEWAY_HOST=localhost -e GATEWAY_HTTPS_PORT=443
+          -e EDGE_RATE_PER_IP=300 -e EDGE_BURST_PER_IP=600
+          tint-reverse-proxy:ci nginx -t
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"

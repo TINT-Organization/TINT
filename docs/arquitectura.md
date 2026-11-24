@@ -40,7 +40,8 @@ flowchart TB
     end
 
     subgraph servicios["Servicios"]
-        GW["gateway<br/>Caddy :80/:443"]
+        RP["reverse-proxy<br/>nginx :80/:443"]
+        GW["gateway<br/>Caddy :8080 (interno)"]
         ID["identity-api<br/>TypeScript/Express :8081"]
         SYNC["sync-core<br/>Go :8083 · N réplicas"]
         SOCIAL["social-core<br/>Go :8082 · N réplicas"]
@@ -60,7 +61,9 @@ flowchart TB
     FB["Firebase Auth"]
 
     WEB -- "login con Google" --> FB
-    WEB -- "HTTP/WebSocket público" --> GW
+    WEB -- "HTTPS/WSS público" --> RP
+    RP -- "HTTP :8080" --> GW
+    RP -- "/tint-media/* (S3 firmado)" --> MI
     GW -- "token check + HTTP /api/v1" --> ID
     GW -- "token check + WebSocket /ws/sync" --> SYNC
     GW -- "token check + WebSocket /ws/social" --> SOCIAL
@@ -113,7 +116,7 @@ flowchart LR
     end
 
     subgraph gateway["Gateway"]
-        GW["Caddy gateway<br/>HTTP/HTTPS :80/:443"]
+        GW["nginx :80/:443 → Caddy :8080<br/>(ADR 0031)"]
     end
 
     subgraph logic["Lógica de aplicación"]
@@ -185,7 +188,7 @@ flowchart LR
 | Estilo o patrón | Aplicación en TINT | Justificación |
 | :--- | :--- | :--- |
 | Arquitectura orientada a servicios por dominio | `identity-api`, `sync-core`, `social-core`, `media-worker`, `analytics` y `voice-core` separan identidad, reproducción, interacción social, procesamiento multimedia, analítica y voz | Cada dominio conserva sus reglas y almacenes; los contratos compartidos se documentan explícitamente y coordinan cambios entre dominios ([§5](#5-contratos-compartidos-entre-dominios)). |
-| Entrada única mediante gateway | Caddy recibe el tráfico público HTTP/HTTPS, ejecuta `forward_auth` y enruta REST y WebSocket hacia los servicios | Centraliza autenticación, CORS, orígenes y terminación de entrada sin exponer los servicios internos directamente ([ADR 0020](adr/0020-entrada-unica-https-y-topologia-produccion.md)). |
+| Entrada única: reverse proxy + gateway | nginx recibe el tráfico público (TLS, HSTS, límite por IP, `/tint-media/*`) y Caddy, ya interno, ejecuta `forward_auth` y enruta REST y WebSocket hacia los servicios ([ADR 0031](adr/0031-nginx-en-el-borde-y-caddy-como-router.md)) | Centraliza autenticación, CORS, orígenes y terminación de entrada sin exponer los servicios internos directamente ([ADR 0020](adr/0020-entrada-unica-https-y-topologia-produccion.md)). |
 | Comunicación síncrona solicitud/respuesta | REST/HTTP entre la web, el gateway y las APIs; SQL y S3 para operaciones que requieren respuesta inmediata | Es adecuada para login, tickets, playback, moderación y URLs firmadas, donde el consumidor necesita el resultado antes de continuar. |
 | Mensajería asíncrona y fan-out | Redis Pub/Sub distribuye estado en tiempo real; Redis Streams desacopla `media:uploads` y `analytics:events` con grupos y acuses | Pub/Sub reduce la latencia de réplicas y Streams aporta persistencia temporal, reintentos y `XACK` para trabajos que no deben bloquear los caminos interactivos ([ADR 0003](adr/0003-redis-pubsub-para-fanout-entre-replicas.md), [ADR 0009](adr/0009-procesamiento-asincrono-con-redis-streams.md)). |
 | Separación de almacenes por responsabilidad | PostgreSQL conserva datos relacionales, Redis estado efímero y coordinación, MinIO objetos multimedia y MongoDB metadatos de chat | Cada almacén se usa según sus propiedades y el ownership queda delimitado por servicio; los contenidos y responsabilidades están enumerados en [§6](#6-almacenes-de-datos). |
@@ -403,7 +406,7 @@ flowchart TB
         subgraph DockerRuntime ["«execution environment» Docker Engine & Compose"]
             
             subgraph SecurityDMZ ["Public Edge Services"]
-                Gateway["«artifact» tint-gateway<br/>(Caddy 2.9 Reverse Proxy)<br/>Ports: 80/443"]
+                Gateway["«artifact» tint-gateway<br/>(Caddy 2.9.1 + caddy-ratelimit)<br/>Ports: 80/443"]
                 Coturn["«artifact» tint-coturn<br/>(STUN/TURN Relay)<br/>Port: 3478 UDP/TCP"]
             end
 
@@ -483,7 +486,8 @@ flowchart TB
 | Nodo | Artefacto | Puertos (host → contenedor) | Volúmenes | Variables principales |
 | :--- | :--- | :--- | :--- | :--- |
 | `tint-env-check` | Imagen `alpine:3.20`, tarea de validación que termina | — | — | Secretos y niveles de log requeridos |
-| `tint-gateway` | Imagen `caddy:2.9-alpine`, entrada HTTPS y reverse proxy | 80 → 80 · 443 → 443 | `gateway-data:/data` · `gateway-config:/config` | `GATEWAY_HOST`, upstreams `*_UPSTREAM`, `GATEWAY_LOG_LEVEL` |
+| `tint-reverse-proxy` | Imagen propia (`reverse-proxy/Dockerfile`): nginx 1.27.5; borde TLS, HSTS, cabeceras, límite por IP y `/tint-media/*` → MinIO ([ADR 0031](adr/0031-nginx-en-el-borde-y-caddy-como-router.md)) | 80 → 80 · 443 → 443 | `edge-certs:/etc/nginx/certs` | `GATEWAY_HOST`, `GATEWAY_HTTPS_PORT`, `EDGE_RATE_PER_IP`, `EDGE_BURST_PER_IP` |
+| `tint-gateway` | Imagen propia (`gateway/Dockerfile`): Caddy 2.9.1 con `caddy-ratelimit` v0.1.0 ([ADR 0028](adr/0028-limites-y-cabeceras-de-seguridad-en-el-gateway.md)); router interno HTTP `:8080`, `forward_auth`, límite por usuario | ninguno (interno) | `gateway-data:/data` · `gateway-config:/config` | upstreams `*_UPSTREAM`, `GATEWAY_LOG_LEVEL` |
 | `tint-postgres` | Imagen `postgres:16-alpine` | 5432 → 5432 | `postgres-data:/var/lib/postgresql/data` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` |
 | `tint-redis` | Imagen `redis:7-alpine` (`--appendonly yes`) | 6379 → 6379 | `redis-data:/data` | — |
 | `tint-minio` | Imagen `pgsty/minio` fijada por digest SHA-256 (la oficial no está disponible) | 9000 → 9000 (API) · 9001 → 9001 (consola) | `minio-data:/data` | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_API_CORS_ALLOW_ORIGIN` (de `MINIO_CORS_ALLOW_ORIGIN`) |
@@ -574,7 +578,7 @@ Cada capa tiene su red de Compose y cada servicio entra solo en las que necesita
 | `data` | Datos | PostgreSQL, Redis, MongoDB, MinIO y los servicios que los usan; en producción es `internal: true` |
 | `media` | Medios | MinIO y gateway (URLs firmadas) |
 
-`web`, `gateway` y el emulador no pertenecen a `data`; `media-worker` y `audit-log` solo a `data`. coturn usa la red del host. En desarrollo las bases publican en `127.0.0.1`; en producción no publican nada (MinIO conserva 9000 y stream-core su UDP de medios). Las reglas las comprueba `gateway/tests/test_network_segmentation.py`.
+`web`, `gateway` y el emulador no pertenecen a `data`; `media-worker` y `audit-log` solo a `data`. coturn usa la red del host. En desarrollo las bases publican en `127.0.0.1`; en producción no publican nada (stream-core conserva su UDP de medios; MinIO ya no publica 9000, ADR 0031). Las reglas las comprueba `gateway/tests/test_network_segmentation.py`.
 
 ## 8. Puertos locales
 
@@ -591,11 +595,12 @@ Cada capa tiene su red de Compose y cada servicio entra solo en las que necesita
 | Firebase Auth Emulator | 9099 (solo `127.0.0.1`) | `docker compose` de desarrollo: login local del host ([ADR 0024](adr/0024-login-local-con-firebase-auth-emulator.md)); no existe en producción |
 | PostgreSQL | 5432 (solo `127.0.0.1`) | no se publica en producción |
 | Redis | 6379 (solo `127.0.0.1`) | no se publica en producción |
-| MinIO | 9000 (API) · 9001 (consola, solo `127.0.0.1`) | en producción solo 9000 |
+| MinIO | 9000 (API) · 9001 (consola, solo `127.0.0.1`) | en producción ninguno: los vídeos salen por `https://<host>/tint-media/*` ([ADR 0031](adr/0031-nginx-en-el-borde-y-caddy-como-router.md)) |
 | MongoDB | 27017 (solo `127.0.0.1`) | `docker compose` (metadatos del chat; social-core); no se publica en producción |
 
-El servicio `gateway` publica `80/443` como entrada única. Redirige HTTP a
-HTTPS, termina TLS con Caddy y mantiene el contrato público de rutas:
+El servicio `reverse-proxy` (nginx) publica `80/443` como entrada única: redirige HTTP a
+HTTPS, termina TLS y sirve `/tint-media/*` desde MinIO ([ADR 0031](adr/0031-nginx-en-el-borde-y-caddy-como-router.md)).
+Todo lo demás pasa a `gateway` (Caddy, HTTP `:8080` interno), que mantiene el contrato público de rutas:
 
 | Ruta pública | Servicio | Upstream configurable |
 | :--- | :--- | :--- |
@@ -624,6 +629,21 @@ servicio está caído o excede ese límite, el gateway responde 503 con el error
 JSON `service_unavailable`, sin conservar un estado de circuito que impida
 atenderlo cuando se recupere. Su política `restart: unless-stopped` permite
 recuperar automáticamente el punto de entrada después de una caída.
+
+Además, el gateway limita y valida la entrada ([ADR 0028](adr/0028-limites-y-cabeceras-de-seguridad-en-el-gateway.md),
+Prototipo 3, escenario 2):
+
+| Medida | Dónde | Respuesta |
+| :--- | :--- | :--- |
+| Límite por usuario: 100 peticiones cada 10 s, clave `X-User-Id` (después de `forward_auth`) | `/api/*` con sesión | `429` JSON `rate_limited` + `Retry-After` |
+| Límite por IP del cliente: 600 peticiones cada 10 s | `/api/v1/invitations/*` | `429` JSON `rate_limited` + `Retry-After` |
+| Tamaño máximo del cuerpo: 1 000 000 bytes (`Content-Length` y `request_body`) | `/api/*` | `413` JSON `payload_too_large` |
+| Rutas internas ocultas con y sin token (no pasan por `forward_auth`) | `/api/v1/internal/*` | `404` |
+| `X-User-*` enviadas por el cliente se borran antes de `forward_auth` | todas | — |
+| Sin `Server`; `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` y CSP mínima | todas | — |
+
+`/healthz` y `/ws/*` no tienen límite de tasa. La autenticación y los límites van dentro de un `route`
+del Caddyfile porque `route` respeta el orden escrito.
 
 ### 8.1 Trazabilidad de solicitudes
 
@@ -726,6 +746,7 @@ Campos obligatorios: `timestamp` (ISO UTC con ms), `level` (`debug|info|warn|err
 | [0025](adr/0025-metadatos-del-chat-en-mongodb.md) | Metadatos del chat en MongoDB, sin el texto (SOC-07, DAT-02) (propuesta) |
 | [0026](adr/0026-app-android-nativa-kotlin.md) | App Android nativa en Kotlin |
 | [0027](adr/0027-segmentacion-de-red-por-capas.md) | Segmentación de red: una red de Compose por capa |
+| [0028](adr/0028-limites-y-cabeceras-de-seguridad-en-el-gateway.md) | Límites de tasa y de tamaño y cabeceras de seguridad en el gateway (propuesta) |
 
 ## 11. Documentación por servicio
 

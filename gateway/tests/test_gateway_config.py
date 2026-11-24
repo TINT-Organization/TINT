@@ -4,6 +4,7 @@ import yaml
 
 
 CONFIG = Path(__file__).parents[1] / "Caddyfile"
+NGINX_SITE = Path(__file__).parents[2] / "reverse-proxy" / "templates" / "default.conf.template"
 COMPOSE = Path(__file__).parents[2] / "docker-compose.yml"
 PRODUCTION_COMPOSE = Path(__file__).parents[2] / "docker-compose.production.yml"
 
@@ -12,18 +13,17 @@ class GatewayConfigTests(unittest.TestCase):
     def test_gateway_config_exists_with_https_redirect_and_frontend_fallback(self):
         caddyfile = CONFIG.read_text(encoding="utf-8")
 
-        self.assertIn("http://{$GATEWAY_HOST:localhost}", caddyfile)
-        self.assertIn("redir https://{host}:{$GATEWAY_HTTPS_PORT:443}{uri} 308", caddyfile)
-        self.assertIn("https://{$GATEWAY_HOST:localhost}", caddyfile)
+        # Desde ADR 0031 Caddy escucha HTTP interno; la redirección a HTTPS la hace nginx.
+        self.assertIn("http://:8080 {", caddyfile)
         self.assertIn("@health path /healthz", caddyfile)
         self.assertIn("@frontend not path /api/* /ws/*", caddyfile)
         self.assertIn("reverse_proxy @frontend web:5173", caddyfile)
 
     def test_gateway_redirects_plain_http_to_https_with_308(self):
-        """OPS-03/AC3: redirige HTTP plano a HTTPS con código 308 conservando host y URI."""
-        caddyfile = CONFIG.read_text(encoding="utf-8")
-        self.assertIn("http://{$GATEWAY_HOST:localhost}", caddyfile)
-        self.assertIn("redir https://{host}:{$GATEWAY_HTTPS_PORT:443}{uri} 308", caddyfile)
+        """OPS-03/AC3: redirige HTTP plano a HTTPS con 308 conservando host y URI (en nginx, ADR 0031)."""
+        conf = NGINX_SITE.read_text(encoding="utf-8")
+        http_block = conf[conf.index("listen 80"):conf.index("listen 443")]
+        self.assertIn("return 308 https://$host:${GATEWAY_HTTPS_PORT}$request_uri;", http_block)
 
     def test_gateway_routes_all_public_service_connectors(self):
         caddyfile = CONFIG.read_text(encoding="utf-8")
@@ -63,14 +63,21 @@ class GatewayConfigTests(unittest.TestCase):
         )
 
     def test_gateway_hides_internal_identity_routes(self):
-        # /api/v1/internal/rooms/{id}/disable solo para la red interna (ADR 0019).
+        # /api/v1/internal/* solo para la red interna (ADR 0019). forward_auth llama a auth/check
+        # directo al upstream, sin pasar por las rutas públicas, así que también se oculta.
         caddyfile = CONFIG.read_text(encoding="utf-8")
 
-        self.assertIn("@internal_api {\n        path /api/v1/internal/*\n        not path /api/v1/internal/auth/check", caddyfile)
+        self.assertIn("@internal_api path /api/v1/internal/*", caddyfile)
         self.assertIn("respond @internal_api 404", caddyfile)
-        self.assertLess(
-            caddyfile.index("respond @internal_api 404"), caddyfile.index("forward_auth @protected")
-        )
+
+    def test_internal_routes_skip_forward_auth_so_they_answer_404_without_token(self):
+        # ADR 0028: en Caddy el orden lo fija la directiva, no el texto. forward_auth corre antes que
+        # respond, así que sin token la ruta interna daba 401 (línea base, P10). Se saca de @protected.
+        caddyfile = CONFIG.read_text(encoding="utf-8")
+        protected = caddyfile.split("@protected {", 1)[1].split("}", 1)[0]
+
+        self.assertIn("/api/v1/internal/*", protected)
+        self.assertIn("not path", protected)
 
     def test_gateway_lets_cors_preflight_through_without_token(self):
         # El navegador no manda Authorization en el preflight OPTIONS del WHIP/WHEP.
@@ -118,15 +125,12 @@ class GatewayConfigTests(unittest.TestCase):
         tras la primera visita. La cabecera vive solo en el sitio HTTPS, nunca en el
         redirector HTTP plano (ADR 0029).
         """
-        caddyfile = CONFIG.read_text(encoding="utf-8")
-
-        hsts = "Strict-Transport-Security \"max-age=31536000; includeSubDomains; preload\""
-        self.assertIn(f"header {hsts}", caddyfile)
-
-        https_block_start = caddyfile.index("https://{$GATEWAY_HOST:localhost}")
-        http_block = caddyfile[: caddyfile.index("(service_timeout)")]
+        conf = NGINX_SITE.read_text(encoding="utf-8")
+        hsts = 'Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always'
+        https_block = conf[conf.index("listen 443"):]
+        http_block = conf[conf.index("listen 80"):conf.index("listen 443")]
+        self.assertIn(f"add_header {hsts};", https_block)
         self.assertNotIn("Strict-Transport-Security", http_block)
-        self.assertGreater(caddyfile.index("Strict-Transport-Security"), https_block_start)
 
     def test_gateway_preserves_or_generates_correlation_id(self):
         caddyfile = CONFIG.read_text(encoding="utf-8")
@@ -136,6 +140,117 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn("header X-Correlation-ID {http.request.header.X-Correlation-ID}", caddyfile)
         self.assertIn("format json", caddyfile)
         self.assertIn("log_append correlation_id {http.request.header.X-Correlation-ID}", caddyfile)
+
+
+class GatewayReverseProxyHardeningTests(unittest.TestCase):
+    """Prototipo 3, escenario 2 (ADR 0028): límites de tasa y tamaño, cabeceras y orden de la entrada."""
+
+    def setUp(self):
+        self.caddyfile = CONFIG.read_text(encoding="utf-8")
+
+    def route_block(self) -> str:
+        start = self.caddyfile.index("    route {")
+        end = self.caddyfile.index("\n    }\n", start)
+        return self.caddyfile[start:end]
+
+    def test_auth_and_rate_limits_run_inside_a_route_in_written_order(self):
+        # rate_limit se ordena por defecto antes de forward_auth; dentro de route se respeta el texto.
+        block = self.route_block()
+        steps = [
+            "request_header -X-User-Id",
+            "zone per_ip_without_session",
+            "forward_auth @protected",
+            "zone per_user",
+        ]
+        positions = [block.index(step) for step in steps]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_client_cannot_inject_identity_headers(self):
+        # copy_headers solo escribe lo que devuelve identity-api; lo que mande el cliente se borra antes.
+        block = self.route_block()
+        for header in ("X-User-Id", "X-User-Sub", "X-User-Role", "X-User-Room-Id", "X-User-Nick"):
+            self.assertIn(f"request_header -{header}", block)
+            self.assertLess(block.index(f"request_header -{header}"), block.index("forward_auth @protected"))
+
+    def test_per_user_limit_uses_verified_identity_and_skips_websockets(self):
+        block = self.route_block()
+        zone = block.split("zone per_user {", 1)[1]
+
+        self.assertIn("key {http.request.header.X-User-Id}", zone)
+        self.assertIn("header X-User-Id *", zone)
+        self.assertIn("path /api/*", zone)
+        self.assertNotIn("/ws/", zone)
+        self.assertIn("window 10s", zone)
+        self.assertIn("events 100", zone)
+
+    def test_per_ip_limit_covers_invitation_routes_with_client_ip(self):
+        block = self.route_block()
+        zone = block.split("zone per_ip_without_session {", 1)[1].split("forward_auth", 1)[0]
+
+        self.assertIn("path /api/v1/invitations/*", zone)
+        self.assertIn("key {client_ip}", zone)
+        self.assertIn("window 10s", zone)
+        self.assertIn("events 600", zone)
+
+    def test_rate_limited_and_oversized_requests_get_json_errors(self):
+        errors = self.caddyfile.split("handle_errors {", 1)[1]
+
+        self.assertIn("{http.error.status_code} == 429", errors)
+        self.assertIn('"error":"rate_limited"', errors)
+        self.assertIn('"error":"payload_too_large"', self.caddyfile)
+        self.assertIn(" 413", self.caddyfile)
+
+    def test_request_body_is_limited_before_reading_it(self):
+        # request_body solo da 502 al enviar el cuerpo al upstream; Content-Length permite un 413 temprano.
+        self.assertIn("header_regexp Content-Length ^[0-9]{7,}$", self.caddyfile)
+        self.assertIn("respond @body_too_large", self.caddyfile)
+        self.assertIn("max_size 1MB", self.caddyfile)
+
+    def test_responses_hide_server_and_send_security_headers(self):
+        # Caddy oculta su Server; las cabeceras del navegador las pone nginx (ADR 0031).
+        self.assertIn("header -Server", self.caddyfile)
+        site = NGINX_SITE.read_text(encoding="utf-8")
+        for header in (
+            "X-Content-Type-Options nosniff",
+            "X-Frame-Options DENY",
+            "Referrer-Policy strict-origin-when-cross-origin",
+            "Content-Security-Policy \"frame-ancestors 'none'; object-src 'none'; base-uri 'self'\"",
+        ):
+            self.assertIn(f"add_header {header}", site)
+
+    def test_hsts_comes_only_from_scenario_1(self):
+        # HSTS es de Secure Channel (escenario 1, ADR 0029) y desde ADR 0031 la pone solo nginx.
+        self.assertNotIn("Strict-Transport-Security", self.caddyfile)
+
+
+class GatewayImageTests(unittest.TestCase):
+    """ADR 0028: el gateway se compila con caddy-ratelimit; versiones fijas."""
+
+    DOCKERFILE = Path(__file__).parents[1] / "Dockerfile"
+
+    def test_gateway_is_built_from_its_own_dockerfile(self):
+        data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+        gateway = data["services"]["gateway"]
+
+        self.assertEqual(gateway.get("build"), "./gateway")
+        self.assertNotIn("image", gateway)
+
+    def test_dockerfile_pins_caddy_and_the_rate_limit_module(self):
+        text = self.DOCKERFILE.read_text(encoding="utf-8")
+
+        self.assertIn("ARG CADDY_VERSION=2.9.1", text)
+        self.assertIn("FROM caddy:${CADDY_VERSION}-builder-alpine AS builder", text)
+        self.assertIn("FROM caddy:${CADDY_VERSION}-alpine", text)
+        self.assertIn("github.com/mholt/caddy-ratelimit@v0.1.0", text)
+        self.assertIn("http.handlers.rate_limit", text)
+
+    def test_ci_validates_the_caddyfile_with_the_built_image(self):
+        workflow = (Path(__file__).parents[2] / ".github" / "workflows" / "ci-pipeline.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("docker build -t tint-gateway:ci gateway", workflow)
+        self.assertIn("tint-gateway:ci caddy validate", workflow)
+        self.assertNotIn("caddy:2.9-alpine caddy validate", workflow)
 
 
 class ComposeStructureTests(unittest.TestCase):

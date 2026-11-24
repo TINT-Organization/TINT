@@ -60,24 +60,60 @@ services:
         esac
         echo "Environment validation passed"
 
-  # Entrada pública única: redirige HTTP a HTTPS y enruta APIs y WebSockets.
-  gateway:
-    image: caddy:2.9-alpine
-    container_name: tint-gateway
+  # Entrada pública única (ADR 0031): nginx publica 80/443, termina TLS (escenario 1), pone HSTS y
+  # las cabeceras de seguridad, limita por IP y tamaño (escenario 2) y sirve /tint-media/* desde
+  # MinIO por TLS. Todo lo demás lo pasa a Caddy (gateway) por HTTP dentro de la red edge.
+  reverse-proxy:
+    build: ./reverse-proxy
+    container_name: tint-reverse-proxy
     networks:
       - edge
-      - app
       - media
     restart: unless-stopped
     <<: *env-check
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      env-check:
+        condition: service_completed_successfully
+      gateway:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     ports:
       - "${GATEWAY_HTTP_PORT:-80}:80"
       - "${GATEWAY_HTTPS_PORT:-443}:443"
     environment:
       GATEWAY_HOST: ${GATEWAY_HOST:-localhost}
       GATEWAY_HTTPS_PORT: ${GATEWAY_HTTPS_PORT:-443}
+      # Límite grueso por IP (el fino es por usuario, en Caddy). El banco lo sube porque su
+      # generador de carga sale de una sola IP.
+      EDGE_RATE_PER_IP: ${EDGE_RATE_PER_IP:-300}
+      EDGE_BURST_PER_IP: ${EDGE_BURST_PER_IP:-600}
+    volumes:
+      - edge-certs:/etc/nginx/certs
+    # worker_connections 4096 (nginx.conf): sin esto el límite de 1024 descriptores corta conexiones.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Router interno (ADR 0020, 0028, 0031): Caddy 2.9.1 con caddy-ratelimit, HTTP en :8080, sin
+  # puertos publicados. Enruta, hace forward_auth y el límite por usuario.
+  gateway:
+    build: ./gateway
+    container_name: tint-gateway
+    networks:
+      - edge
+      - app
+    restart: unless-stopped
+    <<: *env-check
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
       IDENTITY_API_UPSTREAM: ${IDENTITY_API_UPSTREAM:-identity-api:8081}
       SYNC_CORE_UPSTREAM: ${SYNC_CORE_UPSTREAM:-sync-core:8080}
       SOCIAL_CORE_UPSTREAM: ${SOCIAL_CORE_UPSTREAM:-social-core:8082}
@@ -90,7 +126,7 @@ services:
       - gateway-data:/data
       - gateway-config:/config
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "--no-check-certificate", "https://localhost/healthz"]
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8080/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -428,7 +464,7 @@ services:
       # Solo desarrollo (ADR 0024): acepta los ID tokens sin firma del emulador. Vacío = Firebase real.
       FIREBASE_AUTH_EMULATOR_HOST: ${FIREBASE_AUTH_EMULATOR_HOST:-}
       MINIO_ENDPOINT: http://minio:9000
-      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-https://localhost}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-tintadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-tint-media}
@@ -642,6 +678,7 @@ networks:
   media:
 
 volumes:
+  edge-certs:
   gateway-data:
   gateway-config:
   postgres-data:
