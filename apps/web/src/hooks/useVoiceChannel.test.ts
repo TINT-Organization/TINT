@@ -4,6 +4,7 @@ import { useVoiceChannel, type UseVoiceChannelOptions } from './useVoiceChannel'
 import { MockWebSocket } from '../test/mockWebSocket';
 import { FakePeerConnection, FakeStream, flushAsync } from '../test/fakeWebRtc';
 import { apiFetch, ApiError } from '../lib/api';
+import { echoTicket } from '../test/serviceTicketMock';
 
 vi.mock('../lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/api')>()),
@@ -51,6 +52,8 @@ beforeEach(() => {
   FakePeerConnection.instances = [];
   localStorage.clear();
   localStorage.setItem('tint_guest_token', 'g-token');
+  vi.mocked(apiFetch).mockReset();
+  vi.mocked(apiFetch).mockImplementation(echoTicket);
   micStream = new FakeStream();
   getUserMedia = vi.fn(async () => micStream);
 });
@@ -67,13 +70,16 @@ describe('useVoiceChannel — unirse (HU-VOZ-01)', () => {
     expect(getUserMedia).not.toHaveBeenCalled();
   });
 
-  it('pide el micrófono, abre /ws/voice con el guest token y ofrece a quien ya estaba', async () => {
+  it('pide el micrófono, abre /ws/voice con su ticket voice y ofrece a quien ya estaba', async () => {
+    vi.mocked(apiFetch).mockResolvedValueOnce({ token: 'voice-g', expires_at: 'x', audience: 'tint:voice' });
     const { result } = renderHook(() => useVoiceChannel('r1', options()));
     const ws = await joinWith(result);
+    // ADR 0030: el guest token solo sirve para pedir el ticket; no viaja a voice-core.
+    expect(apiFetch).toHaveBeenCalledWith('/rooms/r1/tickets/voice', { method: 'POST' }, 'guest');
     expect(getUserMedia).toHaveBeenCalledWith({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
-    expect(ws.url).toBe('ws://voz/ws/voice?room_id=r1&token=g-token');
+    expect(ws.url).toBe('ws://voz/ws/voice?room_id=r1&token=voice-g');
     expect(result.current.status).toBe('connected');
     expect(result.current.self?.peer_id).toBe('p-me');
     expect(result.current.peers).toEqual([host]);
@@ -83,20 +89,20 @@ describe('useVoiceChannel — unirse (HU-VOZ-01)', () => {
     expect(offer).toMatchObject({ to: 'p-host', data: { description: { type: 'offer' } } });
   });
 
-  it('el host usa un sync-ticket nuevo en cada conexión', async () => {
-    const fetchHostTicket = vi.fn(async () => 'ticket-1');
-    const { result } = renderHook(() => useVoiceChannel('r1', options({ role: 'host', fetchHostTicket })));
+  it('el host usa un ticket voice nuevo en cada conexión', async () => {
+    const fetchTicket = vi.fn(async () => 'ticket-1');
+    const { result } = renderHook(() => useVoiceChannel('r1', options({ role: 'host', fetchTicket })));
     await act(async () => {
       await result.current.join();
     });
-    expect(fetchHostTicket).toHaveBeenCalledWith('r1');
+    expect(fetchTicket).toHaveBeenCalledWith('r1', 'host');
     expect(MockWebSocket.last().url).toContain('token=ticket-1');
   });
 
   it('si el ticket del host falla, reintenta', async () => {
     vi.useFakeTimers();
-    const fetchHostTicket = vi.fn().mockRejectedValueOnce(new Error('red')).mockResolvedValue('t2');
-    const { result } = renderHook(() => useVoiceChannel('r1', options({ role: 'host', fetchHostTicket })));
+    const fetchTicket = vi.fn().mockRejectedValueOnce(new Error('red')).mockResolvedValue('t2');
+    const { result } = renderHook(() => useVoiceChannel('r1', options({ role: 'host', fetchTicket })));
     await act(async () => {
       await result.current.join();
     });
@@ -212,26 +218,65 @@ describe('useVoiceChannel — cierres', () => {
     expect(result.current.notice).toMatch(/llena/i);
   });
 
-  it('4003: el invitado termina, el host reconecta con otro ticket', async () => {
+  it('4003: host e invitado reconectan con otro ticket una vez; un segundo 4003 seguido termina', async () => {
     vi.useFakeTimers();
-    const guest = renderHook(() => useVoiceChannel('r1', options()));
-    await act(async () => {
-      await guest.result.current.join();
-    });
-    act(() => MockWebSocket.last().close(4003));
-    expect(guest.result.current.status).toBe('ended');
+    for (const role of ['guest', 'host'] as const) {
+      MockWebSocket.reset();
+      const fetchTicket = vi.fn(async () => 'tk');
+      const hook = renderHook(() => useVoiceChannel('r1', options({ role, fetchTicket })));
+      await act(async () => {
+        await hook.result.current.join();
+      });
+      act(() => MockWebSocket.last().close(4003));
+      expect(hook.result.current.status).toBe('reconnecting');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      expect(fetchTicket).toHaveBeenCalledTimes(2);
+      expect(fetchTicket).toHaveBeenLastCalledWith('r1', role);
+      act(() => MockWebSocket.last().close(4003));
+      expect(hook.result.current.status).toBe('ended');
+      expect(hook.result.current.notice).toMatch(/caducó/i);
+    }
+  });
 
-    const fetchHostTicket = vi.fn(async () => 'tk');
-    const hostHook = renderHook(() => useVoiceChannel('r1', options({ role: 'host', fetchHostTicket })));
+  it('el reintento por 4003 se rearma con voice_state', async () => {
+    vi.useFakeTimers();
+    const fetchTicket = vi.fn(async () => 'tk');
+    const { result } = renderHook(() => useVoiceChannel('r1', options({ fetchTicket })));
     await act(async () => {
-      await hostHook.result.current.join();
+      await result.current.join();
     });
     act(() => MockWebSocket.last().close(4003));
-    expect(hostHook.result.current.status).toBe('reconnecting');
     await act(async () => {
       await vi.advanceTimersByTimeAsync(100);
     });
-    expect(fetchHostTicket).toHaveBeenCalledTimes(2);
+    const ws = MockWebSocket.last();
+    await act(async () => {
+      ws.open();
+      ws.receive({ type: 'voice_state', room_id: 'r1', self: me, peers: [], ice_servers: [], max_members: 8 });
+      await flushAsync();
+    });
+    act(() => MockWebSocket.last().close(4003));
+    expect(result.current.status).toBe('reconnecting');
+  });
+
+  it('ticket del invitado rechazado: 401 caducó, 403 sin acceso; no reintenta', async () => {
+    vi.mocked(apiFetch).mockRejectedValueOnce(new ApiError(401, 'Invalid token'));
+    const a = renderHook(() => useVoiceChannel('r1', options()));
+    await act(async () => {
+      await a.result.current.join();
+    });
+    expect(a.result.current.status).toBe('ended');
+    expect(a.result.current.notice).toMatch(/caducó/i);
+    vi.mocked(apiFetch).mockRejectedValueOnce(new ApiError(403, 'Forbidden'));
+    const b = renderHook(() => useVoiceChannel('r1', options()));
+    await act(async () => {
+      await b.result.current.join();
+    });
+    expect(b.result.current.status).toBe('ended');
+    expect(b.result.current.notice).toMatch(/ya no tienes acceso/i);
+    expect(MockWebSocket.instances).toHaveLength(0);
   });
 
   it('una caída reconecta con espera exponencial y rehace la malla', async () => {
@@ -385,19 +430,19 @@ describe('useVoiceChannel — silencios', () => {
 });
 
 describe('useVoiceChannel — casos de borde', () => {
-  it('sin fetchHostTicket pide el sync-ticket a identity-api', async () => {
+  it('sin fetchTicket pide el ticket voice a identity-api', async () => {
     vi.mocked(apiFetch).mockResolvedValueOnce({ token: 'desde-api' });
     const { result } = renderHook(() => useVoiceChannel('sala 1', options({ role: 'host' })));
     await act(async () => {
       await result.current.join();
     });
-    expect(apiFetch).toHaveBeenCalledWith('/rooms/sala%201/sync-ticket', { method: 'POST' });
+    expect(apiFetch).toHaveBeenCalledWith('/rooms/sala%201/tickets/voice', { method: 'POST' }, 'host');
     expect(MockWebSocket.last().url).toContain('token=desde-api');
   });
 
   it('un ticket rechazado (403) termina sin reintentar', async () => {
-    const fetchHostTicket = vi.fn().mockRejectedValue(new ApiError(403, 'no'));
-    const { result } = renderHook(() => useVoiceChannel('r1', options({ role: 'host', fetchHostTicket })));
+    const fetchTicket = vi.fn().mockRejectedValue(new ApiError(403, 'no'));
+    const { result } = renderHook(() => useVoiceChannel('r1', options({ role: 'host', fetchTicket })));
     await act(async () => {
       await result.current.join();
     });

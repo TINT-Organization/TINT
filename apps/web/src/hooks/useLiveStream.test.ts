@@ -16,7 +16,8 @@
  *   live.remoteStream: MediaStream | null
  *
  * Dependencias de plataforma: navigator.mediaDevices, RTCPeerConnection, AudioContext y fetch
- * globales; base `VITE_STREAM_API_URL`; ticket del host con POST /rooms/:id/sync-ticket (apiFetch).
+ * globales; base `VITE_STREAM_API_URL`; ticket `stream` (host e invitado) con
+ * POST /rooms/:id/tickets/stream (apiFetch, ADR 0030).
  */
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -116,8 +117,11 @@ beforeEach(() => {
   fetchMock = vi.fn(routeFetch);
   vi.stubGlobal('fetch', fetchMock);
   mockedApi.mockReset();
-  mockedApi.mockImplementation((async (path: string) => {
-    if (path.endsWith('/sync-ticket')) return { token: 'host-ticket', expiresAt: '2099-01-01T00:00:00Z' };
+  mockedApi.mockImplementation((async (path: string, _init?: RequestInit, auth?: string) => {
+    if (path.endsWith('/tickets/stream')) {
+      const token = auth === 'guest' ? 'guest-stream-ticket' : 'host-ticket';
+      return { token, expires_at: '2099-01-01T00:00:00Z', audience: 'tint:stream' };
+    }
     throw new Error(`ruta no simulada ${path}`);
   }) as typeof apiFetch);
 });
@@ -222,7 +226,7 @@ describe('useLiveStream — host: WHIP (HU-LIVE-01 AC1, §3)', () => {
       expect(headersOf(init).get('Content-Type')).toBe('application/sdp');
       expect(headersOf(init).get('Authorization')).toBe('Bearer host-ticket');
     }
-    expect(mockedApi).toHaveBeenCalledWith('/rooms/r1/sync-ticket', expect.objectContaining({ method: 'POST' }));
+    expect(mockedApi).toHaveBeenCalledWith('/rooms/r1/tickets/stream', expect.objectContaining({ method: 'POST' }), 'host');
   });
 
   it('el vídeo va en simulcast VP8 con las capas h, m y l', async () => {
@@ -328,14 +332,15 @@ describe('useLiveStream — viewer: WHEP y DataChannel (HU-LIVE-02, §4)', () =>
     localStorage.setItem('tint_guest_token', 'guest-token');
   });
 
-  it('hace WHEP recvonly de vídeo y audio con el guest token', async () => {
+  it('hace WHEP recvonly de vídeo y audio con su ticket stream (no con el guest token)', async () => {
     const { result } = renderHook(() => useLiveStream('r1', { role: 'guest' }));
     await watch(result);
     const whep = callsTo('/whep');
     expect(whep).toHaveLength(1);
     expect(whep[0][0]).toBe(`${BASE}/api/v1/stream/rooms/r1/whep`);
     expect(headersOf(whep[0][1]).get('Content-Type')).toBe('application/sdp');
-    expect(headersOf(whep[0][1]).get('Authorization')).toBe('Bearer guest-token');
+    expect(mockedApi).toHaveBeenCalledWith('/rooms/r1/tickets/stream', { method: 'POST' }, 'guest');
+    expect(headersOf(whep[0][1]).get('Authorization')).toBe('Bearer guest-stream-ticket');
     expect(getDisplayMedia).not.toHaveBeenCalled();
     const pc = FakeStreamPeerConnection.instances[0];
     const kinds = pc.transceivers.map((t) => `${t.kind}:${t.direction}`).sort();

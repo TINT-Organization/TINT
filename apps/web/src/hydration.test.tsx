@@ -42,7 +42,7 @@ describe('Seamless Client Hydration (AC1, AC2 & AC3)', () => {
           qualities: [],
         });
       }
-      if (typeof path === 'string' && path.includes('/sync-ticket')) {
+      if (typeof path === 'string' && path.includes('/tickets/')) {
         return Promise.resolve({ token: 'mock-sync-ticket' });
       }
       return Promise.resolve({});

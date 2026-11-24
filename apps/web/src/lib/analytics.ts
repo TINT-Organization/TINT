@@ -1,19 +1,17 @@
 /**
  * Cliente de la API de lectura de Analítica (services/analytics, puerto 8084).
  *
- * El host pide un analytics-ticket a identity-api (JWT HS256 de vida corta, role=host,
- * room_id de la sala) y lo usa como Bearer contra la API de analytics. Si analytics
+ * El host pide un ticket `analytics` a identity-api (ADR 0030: `POST /rooms/:id/tickets/analytics`,
+ * JWT HS256 de vida corta con `aud = tint:analytics`, role=host, room_id de la sala) y lo usa como
+ * Bearer contra la API de analytics. Si analytics
  * responde 401 (ticket caducado o revocado) se pide un ticket nuevo UNA vez y se
  * reintenta; si vuelve a fallar, el error sube a la página.
  */
-import { apiFetch } from './api';
+import { getServiceTicket, type ServiceTicket } from './serviceTicket';
 
 export const DEFAULT_ANALYTICS_API_URL = '/api/v1';
 
-export interface AnalyticsTicket {
-  token: string;
-  expiresAt: string;
-}
+export type AnalyticsTicket = ServiceTicket;
 
 /** GET /rooms/{id}/kpis. `live` = calculado al vuelo (sala no cerrada). */
 export interface RoomKpis {
@@ -97,7 +95,7 @@ export class AnalyticsError extends Error {
 }
 
 export function getAnalyticsTicket(roomId: string): Promise<AnalyticsTicket> {
-  return apiFetch(`/rooms/${encodeURIComponent(roomId)}/analytics-ticket`, { method: 'POST' });
+  return getServiceTicket(roomId, 'analytics', 'host');
 }
 
 export interface AnalyticsClient {

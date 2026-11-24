@@ -56,8 +56,7 @@ function renderWatch() {
 
 async function flush() {
   await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
   });
 }
 
@@ -79,12 +78,12 @@ afterEach(() => {
 
 describe('WatchRoom', () => {
   // El chip de nick/rol se prueba en WatchRoom.test.tsx; aquí solo el Canal Sync.
-  it('con sesión de host muestra la sala y pide un sync-ticket', async () => {
+  it('con sesión de host muestra la sala y pide un ticket sync', async () => {
     localStorage.setItem('tint_token', 'firebase');
     renderWatch();
     await flush();
     expect(screen.getByText(/Sala r1/)).toBeInTheDocument();
-    expect(mockedApiFetch).toHaveBeenCalledWith('/rooms/r1/sync-ticket', { method: 'POST' });
+    expect(mockedApiFetch).toHaveBeenCalledWith('/rooms/r1/tickets/sync', { method: 'POST' }, 'host');
   });
 
   it('el token de host tiene prioridad sobre un guest token previo', async () => {
@@ -92,18 +91,21 @@ describe('WatchRoom', () => {
     localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     await flush();
-    expect(mockedApiFetch).toHaveBeenCalledWith('/rooms/r1/sync-ticket', { method: 'POST' });
+    expect(mockedApiFetch).toHaveBeenCalledWith('/rooms/r1/tickets/sync', { method: 'POST' }, 'host');
     expect(MockWebSocket.last().url).toContain('token=ticket');
   });
 
-  it('guest se conecta a /ws/sync con su token y no puede controlar', () => {
+  it('guest se conecta a /ws/sync con su ticket sync (no con el guest token) y no puede controlar', async () => {
     const token = testGuestToken();
     localStorage.setItem('tint_guest_token', token);
     renderWatch();
-    expect(MockWebSocket.last().url).toContain(`room_id=r1&token=${encodeURIComponent(token)}`);
-    act(() => MockWebSocket.last().open());
+    await flush();
+    expect(mockedApiFetch).toHaveBeenCalledWith('/rooms/r1/tickets/sync', { method: 'POST' }, 'guest');
+    const sync = MockWebSocket.instances.filter((s) => s.url.includes('/ws/sync')).at(-1) as MockWebSocket;
+    expect(sync.url).toContain('room_id=r1&token=ticket');
+    expect(sync.url).not.toContain(encodeURIComponent(token));
+    act(() => sync.open());
     expect(screen.getByRole('button', { name: 'Reproducir' })).toBeDisabled();
-    expect(mockedApiFetch).not.toHaveBeenCalledWith('/rooms/r1/sync-ticket', expect.anything());
   });
 
   it('host obtiene un ticket, conecta y habilita los controles', async () => {

@@ -58,10 +58,14 @@ function ticket(token: string) {
 }
 
 describe('getAnalyticsTicket', () => {
-  it('pide el ticket a identity-api con POST', async () => {
-    mockedApi.mockResolvedValueOnce(ticket('t1'));
-    await expect(getAnalyticsTicket('sala 1')).resolves.toEqual(ticket('t1'));
-    expect(mockedApi).toHaveBeenCalledWith('/rooms/sala%201/analytics-ticket', { method: 'POST' });
+  it('pide el ticket analytics a identity-api con POST /tickets/analytics (ADR 0030)', async () => {
+    mockedApi.mockResolvedValueOnce({ token: 't1', expires_at: '2026-10-11T05:00:00.000Z', audience: 'tint:analytics' });
+    await expect(getAnalyticsTicket('sala 1')).resolves.toMatchObject({
+      token: 't1',
+      expiresAt: '2026-10-11T05:00:00.000Z',
+      audience: 'tint:analytics',
+    });
+    expect(mockedApi).toHaveBeenCalledWith('/rooms/sala%201/tickets/analytics', { method: 'POST' }, 'host');
   });
 });
 

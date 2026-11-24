@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiFetch } from '../lib/api';
-import { errorStatus } from '../lib/errorStatus';
 import { getLocalIdentity } from '../lib/identity';
 import { sameOriginWebSocketUrl } from '../lib/publicEntry';
 import { CLOSE_EXPIRED, CLOSE_REVOKED } from '../lib/syncProtocol';
-import { CLOSE_ROOM_DISABLED, isRoomDisabledError } from '../lib/roomClosed';
+import { CLOSE_ROOM_DISABLED } from '../lib/roomClosed';
+import { classifyTicketError, serviceTicketToken } from '../lib/serviceTicket';
 import {
   buildChatMute,
   buildChatSend,
@@ -104,21 +103,12 @@ interface UseSocialSocketOptions {
   reconnectBaseMs?: number;
   reconnectMaxMs?: number;
   /**
-   * Credencial del canal. `host` → sync-ticket fresco de identity-api en cada (re)conexión
-   * (social-core solo acepta láser y encuestas con tokens HS256 de host/cohost, no el ID
-   * token de Firebase); `guest` → `tint_guest_token`. Sin rol: el token guardado.
+   * Con qué credencial se pide el ticket `social` (ADR 0030) en cada (re)conexión: `host` → ID
+   * token de Firebase (social-core solo acepta láser y encuestas con tokens HS256 de host/cohost);
+   * `guest` → `tint_guest_token`, que ya no viaja al WebSocket. Sin rol: la sesión guardada.
    */
   role?: 'host' | 'guest';
 }
-
-function resolveToken(): string {
-  return (
-    localStorage.getItem('tint_token') || localStorage.getItem('tint_guest_token') || ''
-  );
-}
-
-/** Sync-ticket rechazado sin remedio: no es el dueño (403) o la sala no existe (404/410). */
-const FATAL_TICKET_STATUS = [403, 404, 410];
 
 const SEEN_CAP = 200;
 
@@ -148,7 +138,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   // Cierres terminales de social-core: el host retiró o bloqueó al participante (4001) o su token caducó (4003).
   const [revoked, setRevoked] = useState(false);
   const [expired, setExpired] = useState(false);
-  // Sala deshabilitada (ADR 0019): cierre 4010 o sync-ticket con 410 Disabled. Terminal.
+  // Sala deshabilitada (ADR 0019): cierre 4010 o ticket con 410 Disabled. Terminal.
   const [disabled, setDisabled] = useState(false);
   const [triviaLeaderboard, setTriviaLeaderboard] = useState<TriviaLeaderboardView>(EMPTY_LEADERBOARD);
   /** Último voto propio visto por poll_id: los broadcasts no traen my_vote. */
@@ -216,6 +206,8 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     setDisabled(false);
     // Por efecto: un ticket que llega tras desmontar (o tras cambiar de sala) se descarta.
     let disposed = false;
+    // Tras un 4003 se pide un ticket nuevo una vez; se rearma al recibir el historial.
+    let renewedAfterExpiry = false;
 
     const scheduleReconnect = () => {
       const { reconnectBaseMs = 500, reconnectMaxMs = 8000 } = optsRef.current;
@@ -227,24 +219,28 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
 
     const connect = () => {
       setStatus(attemptRef.current === 0 ? 'connecting' : 'reconnecting');
-      if (role === 'host') {
-        apiFetch(`/rooms/${encodeURIComponent(roomId)}/sync-ticket`, { method: 'POST' })
-          .then((ticket: { token: string }) => {
-            if (!disposed) openSocket(ticket.token);
-          })
-          .catch((err: unknown) => {
-            if (disposed) return;
-            const status = errorStatus(err);
-            if (status !== null && FATAL_TICKET_STATUS.includes(status)) {
-              if (isRoomDisabledError(err)) setDisabled(true);
-              setStatus('closed');
-              return;
-            }
+      // Ticket `social` fresco en cada (re)conexión, también para el invitado (ADR 0030).
+      serviceTicketToken(roomId, 'social', role)
+        .then((token) => {
+          if (!disposed) openSocket(token);
+        })
+        .catch((err: unknown) => {
+          if (disposed) return;
+          const failure = classifyTicketError(err, role);
+          if (!failure) {
             scheduleReconnect();
-          });
-        return;
-      }
-      openSocket(role === 'guest' ? (localStorage.getItem('tint_guest_token') ?? '') : resolveToken());
+            return;
+          }
+          closedRef.current = true;
+          if (failure === 'disabled') setDisabled(true);
+          if (failure === 'revoked' || failure === 'expired') {
+            // La sesión del invitado ya no sirve: WatchRoom lo expulsa.
+            localStorage.removeItem('tint_guest_token');
+            if (failure === 'revoked') setRevoked(true);
+            else setExpired(true);
+          }
+          setStatus('closed');
+        });
     };
 
     const openSocket = (token: string) => {
@@ -265,6 +261,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
         const parsed = parseSocialMessage(String(event.data));
         if (!parsed) return;
         if (parsed.type === 'history') {
+          renewedAfterExpiry = false;
           for (const m of parsed.messages) remember(m.event_id);
           setMessages(parsed.messages.slice(-maxMessages));
         } else if (parsed.type === 'chat_message' || parsed.type === 'notice') {
@@ -333,10 +330,17 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           setStatus('closed');
           return;
         }
-        if (ev.code === CLOSE_EXPIRED && role === 'guest') {
-          // El invitado no puede renovar su token (el host sí: pide un ticket nuevo al reconectar).
+        if (ev.code === CLOSE_EXPIRED) {
+          // Ticket caducado: host e invitado piden uno nuevo (ADR 0030). Si la sesión del invitado
+          // también caducó, identity-api lo dirá al pedir el ticket (401 → expired). Un segundo
+          // 4003 seguido es terminal.
+          if (!renewedAfterExpiry) {
+            renewedAfterExpiry = true;
+            scheduleReconnect();
+            return;
+          }
           closedRef.current = true;
-          localStorage.removeItem('tint_guest_token');
+          if (role === 'guest') localStorage.removeItem('tint_guest_token');
           setExpired(true);
           setStatus('closed');
           return;

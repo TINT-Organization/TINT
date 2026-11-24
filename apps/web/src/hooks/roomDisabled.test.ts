@@ -12,6 +12,7 @@ import { useSyncSocket } from './useSyncSocket';
 import { useRoomPlayback } from './useRoomPlayback';
 import { useVoiceChannel, type UseVoiceChannelOptions } from './useVoiceChannel';
 import { voiceCloseNotice } from '../lib/voiceProtocol';
+import { echoTicket } from '../test/serviceTicketMock';
 
 vi.mock('../lib/api', async (orig) => ({
   ...(await orig<typeof import('../lib/api')>()),
@@ -22,7 +23,7 @@ const DISABLED = () => new ApiError(410, 'Disabled', { error: 'Disabled' });
 
 async function flush() {
   await act(async () => {
-    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
   });
 }
 
@@ -31,6 +32,7 @@ beforeEach(() => {
   vi.stubGlobal('WebSocket', MockWebSocket);
   localStorage.clear();
   mockedApi.mockReset();
+  mockedApi.mockImplementation(echoTicket);
   vi.useFakeTimers();
 });
 
@@ -45,6 +47,7 @@ describe('useSocialSocket — sala deshabilitada', () => {
   it('4010: disabled y sin reconexión', async () => {
     localStorage.setItem('tint_guest_token', 'g');
     const { result } = renderHook(() => useSocialSocket('r1', { createSocket, role: 'guest', reconnectBaseMs: 10 }));
+    await flush();
     act(() => MockWebSocket.last().open());
     act(() => MockWebSocket.last().close(4010, 'ROOM_DISABLED'));
     expect(result.current.disabled).toBe(true);
@@ -58,7 +61,7 @@ describe('useSocialSocket — sala deshabilitada', () => {
     expect(localStorage.getItem('tint_guest_token')).toBe('g');
   });
 
-  it('host: sync-ticket con 410 Disabled → disabled; con 410 Deleted no', async () => {
+  it('host: ticket con 410 Disabled → disabled; con 410 Deleted no', async () => {
     mockedApi.mockRejectedValueOnce(DISABLED());
     const a = renderHook(() => useSocialSocket('r1', { createSocket, role: 'host' }));
     await flush();
@@ -75,6 +78,7 @@ describe('useSyncSocket — sala deshabilitada', () => {
   it('4010: disabled y sin reconexión', async () => {
     localStorage.setItem('tint_guest_token', 'g');
     const { result } = renderHook(() => useSyncSocket({ roomId: 'r1', role: 'guest', url: 'ws://s', encoding: 'json' }));
+    await flush();
     act(() => MockWebSocket.last().open());
     act(() => MockWebSocket.last().close(4010));
     expect(result.current.disabled).toBe(true);
@@ -85,7 +89,7 @@ describe('useSyncSocket — sala deshabilitada', () => {
     expect(MockWebSocket.instances).toHaveLength(1);
   });
 
-  it('host: sync-ticket con 410 Disabled → fatalError ROOM_DISABLED', async () => {
+  it('host: ticket con 410 Disabled → fatalError ROOM_DISABLED', async () => {
     mockedApi.mockRejectedValueOnce(DISABLED());
     const { result } = renderHook(() => useSyncSocket({ roomId: 'r1', role: 'host', url: 'ws://s', encoding: 'json' }));
     await flush();
@@ -151,9 +155,20 @@ describe('useVoiceChannel — escenario y sala deshabilitada', () => {
     expect(result.current.notice).toMatch(/el evento terminó/i);
   });
 
-  it('host: sync-ticket con 410 Disabled → roomDisabled', async () => {
+  it('invitado: ticket voice con 410 Disabled → roomDisabled sin tocar el guest token', async () => {
+    localStorage.setItem('tint_guest_token', 'g');
+    mockedApi.mockRejectedValueOnce(DISABLED());
+    const { result } = renderHook(() => useVoiceChannel('r1', options()));
+    await act(async () => {
+      await result.current.join();
+    });
+    expect(result.current.roomDisabled).toBe(true);
+    expect(localStorage.getItem('tint_guest_token')).toBe('g');
+  });
+
+  it('host: ticket con 410 Disabled → roomDisabled', async () => {
     const { result } = renderHook(() =>
-      useVoiceChannel('r1', options({ role: 'host', fetchHostTicket: () => Promise.reject(DISABLED()) })),
+      useVoiceChannel('r1', options({ role: 'host', fetchTicket: () => Promise.reject(DISABLED()) })),
     );
     await act(async () => {
       await result.current.join();

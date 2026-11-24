@@ -176,13 +176,15 @@ export function voiceErrorMessage(code: string): string {
   return ERROR_TEXT[code] ?? 'Algo salió mal con la voz. Intenta de nuevo.';
 }
 
-/** Texto de un cierre sin reintento, o null si conviene reconectar. */
-export function voiceCloseNotice(code: number, isHost: boolean): string | null {
+/**
+ * Texto de un cierre sin reintento, o null si conviene reconectar. `canRenew`: aún se puede pedir
+ * un ticket `voice` nuevo tras un 4003 (ADR 0030: host e invitado renuevan una vez).
+ */
+export function voiceCloseNotice(code: number, canRenew: boolean): string | null {
   if (code === VOICE_CLOSE.REVOKED) return 'Ya no tienes acceso a esta sala.';
   if (code === VOICE_CLOSE.FULL) return ERROR_TEXT.VOICE_FULL;
   if (code === VOICE_CLOSE.NOT_ON_STAGE) return ERROR_TEXT.NOT_ON_STAGE;
   if (code === VOICE_CLOSE.ROOM_DISABLED) return `${ROOM_ENDED_TITLE}.`;
-  // El host pide un sync-ticket nuevo en cada intento; el invitado no puede renovar el suyo.
-  if (code === VOICE_CLOSE.EXPIRED && !isHost) return 'Tu invitación caducó. Pide al host un link nuevo.';
+  if (code === VOICE_CLOSE.EXPIRED && !canRenew) return 'Tu invitación caducó. Pide al host un link nuevo.';
   return null;
 }

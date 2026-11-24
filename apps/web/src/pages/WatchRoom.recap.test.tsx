@@ -75,7 +75,7 @@ const playingState = {
 };
 
 function routeApi(path: string, init?: RequestInit) {
-  if (path.endsWith('/sync-ticket')) return Promise.resolve({ token: 'ticket', expiresAt: 'x' });
+  if (/\/tickets\/(sync|social|voice|stream)$/.test(path)) return Promise.resolve({ token: 'ticket', expiresAt: 'x' });
   if (path.endsWith('/playback')) return Promise.resolve({ mediaId: 'm1', url: 'https://cdn/m1.mp4', expiresAt: null });
   if (path === '/rooms/r1' && init?.method === 'DELETE') return Promise.resolve({ success: true });
   return Promise.reject(new Error(`ruta no simulada ${path}`));

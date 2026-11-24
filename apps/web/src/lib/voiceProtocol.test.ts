@@ -127,8 +127,8 @@ describe('textos para la persona', () => {
   it('cierres terminales', () => {
     expect(voiceCloseNotice(VOICE_CLOSE.REVOKED, false)).toMatch(/acceso/i);
     expect(voiceCloseNotice(VOICE_CLOSE.FULL, false)).toMatch(/llena/i);
-    expect(voiceCloseNotice(VOICE_CLOSE.EXPIRED, false)).toMatch(/caducó/i);
-    expect(voiceCloseNotice(VOICE_CLOSE.EXPIRED, true)).toBeNull(); // el host pide otro ticket
+    expect(voiceCloseNotice(VOICE_CLOSE.EXPIRED, false)).toMatch(/caducó/i); // ya renovó una vez
+    expect(voiceCloseNotice(VOICE_CLOSE.EXPIRED, true)).toBeNull(); // pide otro ticket (ADR 0030)
     expect(voiceCloseNotice(1006, false)).toBeNull();
   });
 

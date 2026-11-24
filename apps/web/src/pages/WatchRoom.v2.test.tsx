@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WatchRoom from './WatchRoom';
 import { MockWebSocket } from '../test/mockWebSocket';
 import { MockXhr } from '../test/mockXhr';
-import { apiFetch } from '../lib/api';
+import { ApiError, apiFetch } from '../lib/api';
 import { testGuestToken } from '../test/guestToken';
 
 vi.mock('../lib/api', async (orig) => ({
@@ -76,7 +76,7 @@ let playbackByCall: Array<{
 }>;
 
 function routeApi(path: string, init?: RequestInit) {
-  if (path.endsWith('/sync-ticket')) return Promise.resolve({ token: 'ticket', expiresAt: 'x' });
+  if (/\/tickets\/(sync|social|voice|stream)$/.test(path)) return Promise.resolve({ token: 'ticket', expiresAt: 'x' });
   if (path.endsWith('/playback')) {
     if (playbackError) return Promise.reject(Object.assign(new Error('HTTP error'), { status: playbackError }));
     const next = playbackByCall.length > 1 ? playbackByCall.shift()! : playbackByCall[0];
@@ -121,9 +121,7 @@ function renderWatch() {
 
 async function flush() {
   await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
   });
 }
 
@@ -166,14 +164,16 @@ describe('WatchRoom v2 — vídeo de la sala (F3)', () => {
     ];
     renderWatch();
     await flush();
-    const ws = MockWebSocket.last();
+    // Solo cuentan los pedidos de playback (los canales también piden sus tickets, ADR 0030).
+    const playbackCalls = () => mockedApiFetch.mock.calls.filter(([p]) => String(p).endsWith('/playback')).length;
+    const ws = MockWebSocket.instances.filter((s) => s.url.includes('/ws/sync')).at(-1) as MockWebSocket;
     act(() => ws.open());
     act(() => ws.receive(state));
     await flush();
-    expect(mockedApiFetch).toHaveBeenCalledTimes(1);
+    expect(playbackCalls()).toBe(1);
     act(() => ws.receive({ ...state, type: 'LOAD', event_id: 'e', position_ms: 0, version: 2, media_id: 'm2' }));
     await flush();
-    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    expect(playbackCalls()).toBe(2);
     expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m2');
     expect(screen.getByText('El host cargó un nuevo vídeo')).toBeInTheDocument();
   });
@@ -509,12 +509,19 @@ describe('WatchRoom v2 — invitado', () => {
     expect(screen.getByRole('link', { name: 'Volver al inicio' })).toHaveAttribute('href', '/');
   });
 
-  it('cierre 4003 del invitado: pantalla de invitación caducada, sin reconectar', async () => {
+  it('cierre 4003 del invitado: pide otro ticket; si su sesión caducó (401) ve la invitación caducada', async () => {
     localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     await flush();
     act(() => MockWebSocket.last().open());
-    act(() => MockWebSocket.last().close(4003, 'token expirado'));
+    mockedApiFetch.mockImplementation(((path: string, init?: RequestInit) =>
+      /\/tickets\//.test(path)
+        ? Promise.reject(new ApiError(401, 'Invalid token', { error: 'Invalid token' }))
+        : routeApi(path, init)) as typeof apiFetch);
+    const sync = MockWebSocket.instances.filter((s) => s.url.includes('/ws/sync')).at(-1) as MockWebSocket;
+    act(() => sync.close(4003, 'token expirado'));
+    await flush();
+    expect(mockedApiFetch).toHaveBeenCalledWith('/rooms/r1/tickets/sync', { method: 'POST' }, 'guest');
     expect(screen.getByRole('alert')).toHaveTextContent(/tu invitación expiró/i);
     expect(localStorage.getItem('tint_guest_token')).toBeNull();
   });
@@ -559,7 +566,7 @@ describe('WatchRoom v2 — invitado', () => {
   ])('host con sync-ticket en %i: mensaje claro en vez de "Reconectando…"', async (status, text) => {
     localStorage.setItem('tint_token', 'host');
     mockedApiFetch.mockImplementation(((path: string, init?: RequestInit) =>
-      path.endsWith('/sync-ticket')
+      /\/tickets\/(sync|social|voice|stream)$/.test(path)
         ? Promise.reject(Object.assign(new Error('x'), { status }))
         : routeApi(path, init)) as typeof apiFetch);
     renderWatch();

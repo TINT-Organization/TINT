@@ -41,24 +41,23 @@ describe('resolveSocialApiUrl', () => {
 });
 
 describe('fetchChatHistory', () => {
-  it('pide el sync-ticket del host y lee GET /api/v1/social/rooms/{id}/chat', async () => {
-    mockedApi.mockResolvedValueOnce({ token: 'ticket' });
+  it('pide el ticket social del host y lee GET /api/v1/social/rooms/{id}/chat', async () => {
+    mockedApi.mockResolvedValueOnce({ token: 'ticket', expires_at: 'x', audience: 'tint:social' });
     const messages = await fetchChatHistory('r 1', { baseUrl: 'https://gw' });
-    expect(mockedApi).toHaveBeenCalledWith('/rooms/r%201/sync-ticket', { method: 'POST' });
+    expect(mockedApi).toHaveBeenCalledWith('/rooms/r%201/tickets/social', { method: 'POST' }, 'host');
     expect(fetchMock).toHaveBeenCalledWith('https://gw/api/v1/social/rooms/r%201/chat', {
       headers: { Authorization: 'Bearer ticket' },
     });
     expect(messages.map((m) => m.event_id)).toEqual(['a']);
   });
 
-  it('respaldo: si el sync-ticket da 410 Disabled usa el analytics-ticket', async () => {
-    mockedApi
-      .mockRejectedValueOnce(new ApiError(410, 'Disabled', { error: 'Disabled' }))
-      .mockResolvedValueOnce({ token: 'analytics' });
-    await expect(hostHistoryTicket('r1')).resolves.toBe('analytics');
-    expect(mockedApi).toHaveBeenLastCalledWith('/rooms/r1/analytics-ticket', { method: 'POST' });
-    mockedApi.mockRejectedValueOnce(new ApiError(403, 'Forbidden'));
+  it('hostHistoryTicket pide solo el ticket social (ADR 0030): sin respaldo con otro ticket', async () => {
+    mockedApi.mockResolvedValueOnce({ token: 'social', expires_at: 'x', audience: 'tint:social' });
+    await expect(hostHistoryTicket('r1')).resolves.toBe('social');
+    mockedApi.mockRejectedValueOnce(new ApiError(410, 'Disabled', { error: 'Disabled' }));
     await expect(hostHistoryTicket('r1')).rejects.toBeInstanceOf(ApiError);
+    expect(mockedApi).toHaveBeenCalledTimes(2);
+    expect(mockedApi).toHaveBeenLastCalledWith('/rooms/r1/tickets/social', { method: 'POST' }, 'host');
   });
 
   it('descarta lo que no es un chat_message válido y conserva el spoiler', async () => {
