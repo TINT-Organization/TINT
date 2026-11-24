@@ -245,13 +245,25 @@ describe('rutas v1', () => {
     const decoded = jwt.verify(res.body.token, env.JWT_SECRET, {
       algorithms: ['HS256'],
       issuer: env.JWT_ISSUER,
-      audience: env.JWT_AUDIENCE,
+      audience: 'tint:sync',
     }) as any;
     expect(decoded.sub).toBe('host-1');
     expect(decoded.room_id).toBe('room-1');
     expect(decoded.role).toBe('host');
     expect(decoded.nick).toBe('Host');
     expect(decoded.exp * 1000).toBe(new Date(res.body.expiresAt).getTime());
+  });
+
+  it('POST /rooms/:id/sync-ticket emite la audiencia legada mientras dure la transición (ADR 0030)', async () => {
+    vi.mocked(isOwner).mockResolvedValueOnce(true);
+    env.JWT_LEGACY_AUDIENCE = 'tint:room';
+    try {
+      const res = await request(app).post('/api/v1/rooms/room-1/sync-ticket').send({});
+      expect(res.status).toBe(200);
+      expect((jwt.decode(res.body.token) as any).aud).toBe('tint:room');
+    } finally {
+      env.JWT_LEGACY_AUDIENCE = undefined;
+    }
   });
 
   it('POST /rooms/:id/sync-ticket sin displayName usa solo la parte local del email (nunca el email completo)', async () => {

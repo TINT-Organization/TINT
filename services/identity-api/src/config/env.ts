@@ -18,11 +18,20 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   AUTH_PROVIDER: z.enum(['firebase']).default('firebase'),
   JWT_ISSUER: z.string().default('tint-identity'),
-  JWT_AUDIENCE: z.string().default('tint:room'),
+  // Audiencia propia de identity-api (REST y guest token). Cada servicio tiene la suya (ADR 0030).
+  JWT_AUDIENCE: z.string().default('tint:api'),
+  // Transición de ADR 0030: audiencia legada (`tint:room`) que se acepta además de la propia.
+  // Vacía o sin valor = desactivada (falla cerrado).
+  JWT_LEGACY_AUDIENCE: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.string().optional(),
+  ),
   JWT_SECRET: z.string().default('dev-secret-change-in-prod'),
   GUEST_TOKEN_TTL_HOURS: z.string().default('4'),
   INVITATION_DEFAULT_TTL_HOURS: z.string().default('24'),
   SYNC_TICKET_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+  // Vida de los tickets por servicio de POST /rooms/:id/tickets/:service (ADR 0030).
+  SERVICE_TICKET_TTL_SECONDS: z.coerce.number().int().positive().default(600),
   DATABASE_URL: z.string().default('postgres://tint:tint@localhost:5432/tint'),
   REDIS_URL: z.string().default('redis://localhost:6379'),
   // MinIO / S3: firmado de URLs GET para reproducir el vídeo de la sala.
