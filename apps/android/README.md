@@ -65,6 +65,8 @@ En un emulador, `localhost` es el propio emulador: usa `10.0.2.2` en las tres pr
 
 > El tráfico sin TLS (`http`/`ws`) solo está permitido en el build `debug`.
 
+**Credenciales (ADR 0030, un ticket por servicio).** El guest token (`tint_guest_token`) solo viaja a identity-api: antes de abrir cada canal la app pide su ticket con `POST /api/v1/rooms/{id}/tickets/{sync|social|voice|stream}` (`net/ServiceTickets.kt`) y abre `/ws/sync`, `/ws/social`, `/ws/voice` y WHEP con ese ticket de 10 minutos, que los otros servicios rechazan. Se pide uno nuevo en cada (re)conexión; tras un cierre `4003` se pide otro una vez (antes la app no podía renovar). identity-api debe tener ese endpoint: contra un servidor sin él, los canales no conectan.
+
 ## Observar la sincronía
 En el build `debug` la sala escribe una línea por segundo en logcat: `adb logcat -s TintSync` →
 `drift=-47 speed=2.0 advancing=true room=PLAYING@2.0 srvDrift=-96 rtt=59` (`drift` es el desfase del reproductor
@@ -125,7 +127,7 @@ gateway) y la tablet entrando con el link:
   red el vídeo **volvió solo en unos 30 s** y siguió corriendo. La espera entre intentos crece de 1 s a 10 s, como en la web.
 - **AC2:** al «Terminar evento» del host, la tablet muestra «El evento terminó.», corta el vídeo y no reconecta.
 
-La app habla WHEP con el guest token (`POST /api/v1/stream/rooms/{id}/whep`, ICE completo antes de ofrecer, DataChannel
+La app habla WHEP con su ticket `stream` (ADR 0030; `POST /api/v1/stream/rooms/{id}/whep`, ICE completo antes de ofrecer, DataChannel
 `stream-events` negociado con id 0). Para probar contra un servidor en la LAN, stream-core debe anunciar una IP que la
 tablet alcance (`STREAM_PUBLIC_IP` del `.env`, no `127.0.0.1`) y el puerto UDP 8087 debe estar abierto.
 

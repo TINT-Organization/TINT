@@ -56,6 +56,7 @@ import com.tint.app.live.StreamScene
 import com.tint.app.live.ViewerPeerFactory
 import com.tint.app.live.WebRtcEnv
 import com.tint.app.live.WebRtcViewerPeer
+import com.tint.app.net.TicketService
 import com.tint.app.net.TokenClaims
 import com.tint.app.social.SocialClient
 import com.tint.app.sync.OkHttpSyncSocketFactory
@@ -85,7 +86,9 @@ fun LiveRoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Uni
     val controller = remember(room.roomId) {
         LiveViewerController(
             roomId = room.roomId,
-            signaling = StreamApi(container.endpoints.streamApiUrl, container.http) { container.tokens.guestToken },
+            signaling = StreamApi(container.endpoints.streamApiUrl, container.http) {
+                container.tickets.token(room.roomId, TicketService.STREAM)
+            },
             peers = ViewerPeerFactory { listener ->
                 // libwebrtc avisa desde sus propios hilos: la pista de vídeo se publica en el hilo principal.
                 WebRtcViewerPeer(env, listener) { track -> main.post { videoTrack = track } }
@@ -96,7 +99,7 @@ fun LiveRoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Uni
     val social = remember(room.roomId) {
         SocialClient(
             roomId = room.roomId,
-            token = { container.tokens.guestToken },
+            token = { container.tickets.token(room.roomId, TicketService.SOCIAL) },
             urlFor = container.endpoints::socialUrl,
             sockets = OkHttpSyncSocketFactory(container.http),
             scope = scope,

@@ -9,6 +9,7 @@ import com.tint.app.ambilight.AmbilightRepository
 import com.tint.app.join.InviteRepository
 import com.tint.app.join.RecentRooms
 import com.tint.app.net.ApiClient
+import com.tint.app.net.ServiceTickets
 import com.tint.app.net.StoredTokenStore
 import com.tint.app.store.PrefsKeyValueStore
 import com.tint.app.sync.PlaybackRepository
@@ -42,6 +43,9 @@ class AppContainer(context: Context) {
     )
 
     val invites = InviteRepository(api, tokens, deviceId)
+
+    /** Un ticket por servicio (ADR 0030): cada canal pide el suyo con el guest token. */
+    val tickets = ServiceTickets(api, tokens)
     val recentRooms = RecentRooms(store)
     val playback = PlaybackRepository(api, tokens)
     val ambilight = AmbilightRepository(http)

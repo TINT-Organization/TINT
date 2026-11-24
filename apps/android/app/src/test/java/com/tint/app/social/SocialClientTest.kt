@@ -291,9 +291,30 @@ class SocialClientTest {
         client.stop()
         client.start()
         sockets.last().listener.onOpen()
+        // ADR 0030: un 4003 pide otro ticket social una vez; el segundo seguido es terminal.
+        val before = sockets.size
+        sockets.last().listener.onClosed(4003)
+        assertFalse(client.state.value.expired)
+        assertEquals(before + 1, sockets.size)
+        sockets.last().listener.onOpen()
         sockets.last().listener.onClosed(4003)
         assertTrue(client.state.value.expired)
+        assertEquals(before + 1, sockets.size)
         assertEquals(emptyList<Long>(), sleeps)
+    }
+
+    @Test
+    fun `el reintento por 4003 se rearma con el historial`() {
+        client.start()
+        sockets.last().listener.onOpen()
+        sockets.last().listener.onClosed(4003)
+        sockets.last().listener.onOpen()
+        sockets.last().listener.onMessage("""{"type":"history","messages":[]}""")
+
+        sockets.last().listener.onClosed(4003)
+
+        assertFalse(client.state.value.expired)
+        assertEquals(3, sockets.size)
     }
 
     @Test

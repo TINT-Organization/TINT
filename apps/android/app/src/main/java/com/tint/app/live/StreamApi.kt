@@ -1,5 +1,8 @@
 package com.tint.app.live
 
+import com.tint.app.net.ApiError
+import com.tint.app.net.TicketRejected
+import com.tint.app.sync.SyncProtocol
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
@@ -25,19 +28,26 @@ interface StreamSignaling {
 }
 
 /**
- * Señalización WHEP por HTTP contra stream-core (rutas bajo `/api/v1/stream`, directo o por el gateway) con el token de
- * invitado, igual que `useLiveStream.ts` de la web. `baseUrl` es el origen, sin la ruta.
+ * Señalización WHEP por HTTP contra stream-core (rutas bajo `/api/v1/stream`, directo o por el gateway) con el ticket
+ * `stream` de identity-api (ADR 0030), igual que `useLiveStream.ts` de la web. `baseUrl` es el origen, sin la ruta.
+ *
+ * `token` pide un ticket nuevo: se llama al empezar cada intento ([iceServers]) y WHEP y `DELETE` reutilizan ese
+ * ticket. Un [TicketRejected] se traduce al error terminal equivalente; un fallo transitorio, a uno reintentable.
  */
 class StreamApi(
     baseUrl: String,
     private val http: OkHttpClient,
-    private val token: () -> String?,
+    private val token: suspend () -> String?,
 ) : StreamSignaling {
     private val base = baseUrl.trimEnd('/')
+
+    @Volatile
+    private var ticket: String? = null
 
     private class Reply(val code: Int, val body: String, val location: String?)
 
     override suspend fun iceServers(roomId: String): List<IceServer> {
+        ticket = null // nuevo intento: ticket nuevo
         val reply = call(Request.Builder().url(roomUrl(roomId, "ice-servers")).get())
         if (reply.code !in 200..299) throw StreamProtocol.errorFor(reply.code, reply.body)
         return StreamProtocol.parseIceServers(reply.body)
@@ -68,8 +78,33 @@ class StreamApi(
             .addPathSegment(action)
             .build()
 
+    private suspend fun currentTicket(): String? {
+        ticket?.let { return it }
+        val fresh = try {
+            token()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: TicketRejected) {
+            val code = when (e.closeCode) {
+                SyncProtocol.CLOSE_REVOKED -> "TOKEN_REVOKED"
+                SyncProtocol.CLOSE_EXPIRED -> "TOKEN_EXPIRED"
+                else -> "ROOM_DISABLED"
+            }
+            val status = if (code == "ROOM_DISABLED") 410 else 401
+            throw StreamError(status, code, StreamProtocol.errorMessage(code))
+        } catch (e: ApiError) {
+            throw if (e.status >= 500 || e.status == 429) {
+                StreamError(e.status, "UNAVAILABLE", StreamProtocol.errorMessage("UNAVAILABLE"))
+            } else {
+                StreamError(0, "NETWORK", StreamProtocol.errorMessage("NETWORK"))
+            }
+        }
+        ticket = fresh
+        return fresh
+    }
+
     private suspend fun call(builder: Request.Builder): Reply {
-        val bearer = token() ?: throw StreamProtocol.errorFor(401, null)
+        val bearer = currentTicket() ?: throw StreamProtocol.errorFor(401, null)
         val request = builder.header("Authorization", "Bearer $bearer").build()
         return withContext(Dispatchers.IO) {
             try {

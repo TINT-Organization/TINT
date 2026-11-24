@@ -1,5 +1,8 @@
 package com.tint.app.live
 
+import com.tint.app.net.ApiError
+import com.tint.app.net.TicketRejected
+import com.tint.app.sync.SyncProtocol
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
@@ -13,13 +16,20 @@ import org.junit.Test
 
 class StreamApiTest {
     private lateinit var server: MockWebServer
+    /** Ticket `stream` que devolvería identity-api (ADR 0030); cuenta cuántos se piden. */
     private var token: String? = "guest-jwt"
+    private var ticketError: Exception? = null
+    private var ticketsRequested = 0
     private lateinit var api: StreamApi
 
     @Before
     fun setUp() {
         server = MockWebServer().apply { start() }
-        api = StreamApi(server.url("/").toString().trimEnd('/'), OkHttpClient(), token = { token })
+        api = StreamApi(server.url("/").toString().trimEnd('/'), OkHttpClient(), token = {
+            ticketsRequested++
+            ticketError?.let { throw it }
+            token
+        })
     }
 
     @After
@@ -117,6 +127,51 @@ class StreamApiTest {
         assertEquals(0, e.status)
         assertEquals("NETWORK", e.code)
         assertTrue(!StreamProtocol.isTerminal(e))
+    }
+
+    @Test
+    fun `cada intento pide un ticket nuevo con los servidores ICE y WHEP lo reutiliza`() = runBlocking {
+        server.enqueue(json("""{"ice_servers":[]}"""))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("v=0"))
+        api.iceServers("r1")
+        token = "stream-2"
+        api.whep("r1", "o")
+        assertEquals(1, ticketsRequested)
+        assertEquals("Bearer guest-jwt", server.takeRequest().getHeader("Authorization"))
+        assertEquals("Bearer guest-jwt", server.takeRequest().getHeader("Authorization"))
+
+        server.enqueue(json("""{"ice_servers":[]}"""))
+        api.iceServers("r1")
+        assertEquals(2, ticketsRequested)
+        assertEquals("Bearer stream-2", server.takeRequest().getHeader("Authorization"))
+    }
+
+    @Test
+    fun `un ticket rechazado es un error terminal con su codigo y no llega a stream-core`() {
+        ticketError = TicketRejected(SyncProtocol.CLOSE_REVOKED, "Forbidden")
+        val revoked = failure { api.iceServers("r1") }
+        assertEquals("TOKEN_REVOKED", revoked.code)
+        assertTrue(StreamProtocol.isTerminal(revoked))
+
+        ticketError = TicketRejected(SyncProtocol.CLOSE_EXPIRED, "Invalid token")
+        assertEquals("TOKEN_EXPIRED", failure { api.iceServers("r1") }.code)
+
+        ticketError = TicketRejected(SyncProtocol.CLOSE_ROOM_CLOSED, "Disabled")
+        assertEquals("ROOM_DISABLED", failure { api.iceServers("r1") }.code)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun `un fallo transitorio al pedir el ticket se puede reintentar`() {
+        ticketError = ApiError(0, "sin red")
+        val network = failure { api.iceServers("r1") }
+        assertEquals("NETWORK", network.code)
+        assertTrue(!StreamProtocol.isTerminal(network))
+
+        ticketError = ApiError(503, "x")
+        val unavailable = failure { api.iceServers("r1") }
+        assertEquals("UNAVAILABLE", unavailable.code)
+        assertTrue(!StreamProtocol.isTerminal(unavailable))
     }
 
     @Test

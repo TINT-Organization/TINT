@@ -58,7 +58,7 @@ data class SyncUiState(
     val correction: SyncCorrection? = null,
     /** Cierre 4001: el host retiró al invitado; no se reconecta. */
     val revoked: Boolean = false,
-    /** Cierre 4003: el token caducó; hay que volver a unirse. */
+    /** El ticket caducó dos veces seguidas (4003) o identity-api ya no renueva la sesión: hay que volver a unirse. */
     val expired: Boolean = false,
     val volume: Double = 1.0,
     val quality: String = "auto",
@@ -73,13 +73,14 @@ data class SyncUiState(
  * Cliente del Canal Sync como participante. Solo refleja el estado maestro (espejo de
  * `apps/web/src/hooks/useSyncSocket.ts`): descarta broadcasts por versión, responde cada
  * `HEARTBEAT` con un `SYNC_CHECK` y expone las correcciones que decide el servidor.
- * Reconecta con backoff exponencial salvo ante `4001`/`4003`.
+ * Reconecta con backoff exponencial y un ticket `sync` nuevo (ADR 0030) salvo ante `4001`/`4010` o un segundo
+ * `4003` seguido.
  *
  * `localPositionMs` se llama desde el hilo del socket: debe poder leerse desde cualquier hilo.
  */
 class SyncClient(
     private val roomId: String,
-    token: () -> String?,
+    token: suspend () -> String?,
     urlFor: (roomId: String, token: String) -> String,
     sockets: SyncSocketFactory,
     scope: CoroutineScope,
@@ -122,7 +123,7 @@ class SyncClient(
                     it.copy(
                         connected = false,
                         revoked = it.revoked || code == SyncProtocol.CLOSE_REVOKED,
-                        expired = it.expired || code == SyncProtocol.CLOSE_EXPIRED,
+                        expired = it.expired || (code == SyncProtocol.CLOSE_EXPIRED && reconnectAttempt == null),
                         reconnectAttempt = reconnectAttempt ?: it.reconnectAttempt,
                     )
                 }
