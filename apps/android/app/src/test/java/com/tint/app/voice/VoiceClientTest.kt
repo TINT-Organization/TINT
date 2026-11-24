@@ -1,6 +1,8 @@
 package com.tint.app.voice
 
 import com.tint.app.live.IceServer
+import com.tint.app.net.TicketRejected
+import com.tint.app.sync.SyncProtocol
 import com.tint.app.sync.SyncSocket
 import com.tint.app.sync.SyncSocketFactory
 import com.tint.app.sync.SyncSocketListener
@@ -395,13 +397,52 @@ class VoiceClientTest {
     }
 
     @Test
-    fun `una invitacion caducada termina con su aviso`() {
+    fun `un 4003 pide otro ticket voice una vez y el segundo seguido termina con su aviso`() {
         client.join()
+        token = "voice-2"
+
+        socket.listener.onClosed(4003)
+
+        assertEquals(VoiceStatus.RECONNECTING, state.status)
+        assertEquals(2, sockets.size)
+        assertEquals("ws://h/ws/voice?room_id=r1&token=voice-2", socket.url)
 
         socket.listener.onClosed(4003)
 
         assertEquals(VoiceStatus.ENDED, state.status)
         assertEquals("Tu invitación caducó. Pide al host un link nuevo.", state.notice)
+    }
+
+    @Test
+    fun `el reintento por 4003 se rearma con voice_state`() {
+        joined()
+        socket.listener.onClosed(4003)
+        socket.listener.onOpen()
+        socket.listener.onMessage(voiceState())
+
+        socket.listener.onClosed(4003)
+
+        assertEquals(VoiceStatus.RECONNECTING, state.status)
+        assertEquals(3, sockets.size)
+    }
+
+    @Test
+    fun `un ticket rechazado por identity-api termina la voz con el aviso de su cierre`() {
+        val rejected = VoiceClient(
+            roomId = "r1",
+            token = { throw TicketRejected(SyncProtocol.CLOSE_REVOKED, "Forbidden") },
+            urlFor = { room, t -> "ws://h/ws/voice?room_id=$room&token=$t" },
+            sockets = SyncSocketFactory { url, listener -> FakeSocket(url, listener).also { sockets += it } },
+            meshes = VoiceMeshFactory { selfId, ice, send, levels -> FakeMesh(selfId, ice, send, levels).also { meshes += it } },
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            sleep = { },
+        )
+
+        rejected.join()
+
+        assertTrue(sockets.isEmpty())
+        assertEquals(VoiceStatus.ENDED, rejected.state.value.status)
+        assertEquals("Ya no tienes acceso a esta sala.", rejected.state.value.notice)
     }
 
     // ---- Salir ----
