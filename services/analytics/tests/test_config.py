@@ -12,7 +12,8 @@ def test_defaults():
     assert settings.database_url == ENV["DATABASE_URL"]
     assert settings.jwt_secret == "s3cret"
     assert settings.jwt_issuer == "tint-identity"
-    assert settings.jwt_audience == "tint:room"
+    assert settings.jwt_audience == "tint:analytics"
+    assert settings.jwt_legacy_audience is None, "sin JWT_LEGACY_AUDIENCE no hay audiencia legada"
     assert settings.redis_url == "redis://localhost:6379"
     assert settings.port == 8084
     assert settings.allowed_origins == ("http://localhost:5173",)
@@ -30,6 +31,7 @@ def test_overrides():
             **ENV,
             "JWT_ISSUER": "iss",
             "JWT_AUDIENCE": "aud",
+            "JWT_LEGACY_AUDIENCE": "tint:room",
             "REDIS_URL": "redis://redis:6379",
             "ANALYTICS_PORT": "9000",
             "ANALYTICS_ALLOWED_ORIGINS": " http://a.test , ,http://b.test ",
@@ -40,6 +42,7 @@ def test_overrides():
         }
     )
     assert (settings.jwt_issuer, settings.jwt_audience) == ("iss", "aud")
+    assert settings.jwt_legacy_audience == "tint:room"
     assert settings.redis_url == "redis://redis:6379"
     assert settings.port == 9000
     assert settings.allowed_origins == ("http://a.test", "http://b.test")
@@ -73,3 +76,8 @@ def test_reads_os_environ_by_default(monkeypatch):
     for key, value in ENV.items():
         monkeypatch.setenv(key, value)
     assert Settings.from_env().jwt_secret == "s3cret"
+
+
+def test_empty_legacy_audience_is_disabled():
+    settings = Settings.from_env({**ENV, "JWT_LEGACY_AUDIENCE": ""})
+    assert settings.jwt_legacy_audience is None

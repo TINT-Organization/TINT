@@ -86,6 +86,8 @@ def test_main_migrates_then_starts_consumer_maintenance_and_api_and_shuts_down()
     assert server.address == ("0.0.0.0", 8084)
     assert server.served.is_set() and server.stopped.is_set() and server.closed
     assert server.api.issuer == "tint-identity"
+    assert server.api.audience == "tint:analytics"
+    assert server.api.legacy_audience is None, "sin JWT_LEGACY_AUDIENCE falla cerrado"
     assert server.api.admin_password is None, "sin ANALYTICS_ADMIN_PASSWORD no hay panel"
     # La API usa un cliente con timeout corto para fallar rápido (503) si Redis se cuelga.
     consumer_kwargs, api_kwargs = (kwargs for _url, kwargs in rec.redis_calls)
@@ -132,3 +134,10 @@ def test_install_signal_handlers_sets_stop(monkeypatch):
 def test_main_passes_the_admin_password_to_the_api():
     _code, rec = run_main(env={**ENV, "ANALYTICS_ADMIN_PASSWORD": "clave-del-grupo"})
     assert rec.servers[0].api.admin_password == "clave-del-grupo"
+
+
+def test_main_passes_audiences_to_the_api():
+    env = {**ENV, "JWT_AUDIENCE": "tint:analytics", "JWT_LEGACY_AUDIENCE": "tint:room"}
+    _code, rec = run_main(env=env)
+    assert rec.servers[0].api.audience == "tint:analytics"
+    assert rec.servers[0].api.legacy_audience == "tint:room"
