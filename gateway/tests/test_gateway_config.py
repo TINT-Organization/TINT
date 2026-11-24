@@ -118,6 +118,23 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn("restart: unless-stopped", compose)
         self.assertIn("- gateway-data:/data", compose)
 
+    def test_gateway_sends_hsts_header_on_https(self):
+        """SEC/Escenario 1 (Secure Channel): el bloque HTTPS emite Strict-Transport-Security.
+
+        max-age de un año, includeSubDomains y preload para que el navegador fije HTTPS
+        tras la primera visita. La cabecera vive solo en el sitio HTTPS, nunca en el
+        redirector HTTP plano (ADR 0029).
+        """
+        caddyfile = CONFIG.read_text(encoding="utf-8")
+
+        hsts = "Strict-Transport-Security \"max-age=31536000; includeSubDomains; preload\""
+        self.assertIn(f"header {hsts}", caddyfile)
+
+        https_block_start = caddyfile.index("https://{$GATEWAY_HOST:localhost}")
+        http_block = caddyfile[: caddyfile.index("(service_timeout)")]
+        self.assertNotIn("Strict-Transport-Security", http_block)
+        self.assertGreater(caddyfile.index("Strict-Transport-Security"), https_block_start)
+
     def test_gateway_preserves_or_generates_correlation_id(self):
         caddyfile = CONFIG.read_text(encoding="utf-8")
 

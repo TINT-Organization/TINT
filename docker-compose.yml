@@ -12,6 +12,7 @@ services:
   env-check:
     image: alpine:3.20
     container_name: tint-env-check
+    network_mode: none
     env_file:
       - path: .env
         required: true
@@ -64,6 +65,10 @@ services:
   gateway:
     build: ./gateway
     container_name: tint-gateway
+    networks:
+      - edge
+      - app
+      - media
     restart: unless-stopped
     <<: *env-check
     extra_hosts:
@@ -107,6 +112,9 @@ services:
         # Solo desarrollo (ADR 0024): vacío = Firebase real. El override de producción lo vacía.
         VITE_FIREBASE_AUTH_EMULATOR_URL: ${VITE_FIREBASE_AUTH_EMULATOR_URL:-}
     container_name: tint-web
+    networks:
+      - edge
+      - app
     <<: *env-check
     environment:
       NGINX_ERROR_LOG_LEVEL: ${NGINX_ERROR_LOG_LEVEL:-warn}
@@ -125,13 +133,15 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: tint-postgres
+    networks:
+      - data
     <<: *env-check
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-tint}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-tint}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -143,10 +153,12 @@ services:
   redis:
     image: redis:7-alpine
     container_name: tint-redis
+    networks:
+      - data
     <<: *env-check
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -159,6 +171,9 @@ services:
     #image: minio/minio:latest
     image: pgsty/minio@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372 # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
     container_name: tint-minio
+    networks:
+      - data
+      - media
     <<: *env-check
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
@@ -168,7 +183,7 @@ services:
       MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_CORS_ALLOW_ORIGIN:-https://localhost,http://localhost:5173}
     ports:
       - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio-data:/data
     healthcheck:
@@ -182,6 +197,8 @@ services:
     #image: minio/mc:latest
     image: pgsty/mc@sha256:ce62c9053c69ce12a527a322345b5ad9f44b5f8a7b8189f82e516f2e3f30f1d8 # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
     container_name: tint-minio-init
+    networks:
+      - data
     <<: *env-check
     depends_on:
       env-check:
@@ -205,6 +222,8 @@ services:
   media-worker:
     build: ./services/media-worker
     container_name: tint-media-worker
+    networks:
+      - data
     restart: unless-stopped
     <<: *env-check
     depends_on:
@@ -238,6 +257,9 @@ services:
   analytics:
     build: ./services/analytics
     container_name: tint-analytics
+    networks:
+      - app
+      - data
     restart: unless-stopped
     <<: *env-check
     depends_on:
@@ -278,6 +300,8 @@ services:
   audit-log:
     build: ./services/audit-log
     container_name: tint-audit-log
+    networks:
+      - data
     restart: unless-stopped
     <<: *env-check
     depends_on:
@@ -303,6 +327,9 @@ services:
   social-core:
     build: ./services/social-core
     container_name: tint-social-core
+    networks:
+      - app
+      - data
     <<: *env-check
     ports:
       - "8082:8082"
@@ -340,6 +367,9 @@ services:
   sync-core:
     build: ./services/sync-core
     container_name: tint-sync-core
+    networks:
+      - app
+      - data
     <<: *env-check
     depends_on:
       env-check:
@@ -365,6 +395,9 @@ services:
   identity-api:
     build: ./services/identity-api
     container_name: tint-identity-api
+    networks:
+      - app
+      - data
     restart: unless-stopped
     <<: *env-check
     depends_on:
@@ -414,6 +447,9 @@ services:
   voice-core:
     build: ./services/voice-core
     container_name: tint-voice-core
+    networks:
+      - app
+      - data
     <<: *env-check
     depends_on:
       env-check:
@@ -448,6 +484,8 @@ services:
   mongodb:
     image: mongo:8.0
     container_name: tint-mongodb
+    networks:
+      - data
     restart: unless-stopped
     <<: *env-check
     environment:
@@ -455,7 +493,7 @@ services:
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
       MONGO_INITDB_DATABASE: ${MONGO_DB:-tint}
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"
     volumes:
       - mongo-data:/data/db
     healthcheck:
@@ -471,6 +509,8 @@ services:
   mongo-init:
     image: mongo:8.0
     container_name: tint-mongo-init
+    networks:
+      - data
     depends_on:
       env-check:
         condition: service_completed_successfully
@@ -505,6 +545,9 @@ services:
   stream-core:
     build: ./services/stream-core
     container_name: tint-stream-core
+    networks:
+      - app
+      - data
     <<: *env-check
     depends_on:
       env-check:
@@ -545,6 +588,8 @@ services:
   firebase-auth-emulator:
     build: ./firebase-auth-emulator
     container_name: tint-firebase-auth-emulator
+    networks:
+      - edge
     <<: *env-check
     environment:
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-demo-tint}
@@ -582,6 +627,20 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+# Segmentación de red (Prototipo 3, escenario 3, ADR 0027): una red por capa.
+#   edge  → Presentación y Acceso (gateway, web, emulador de login local).
+#   app   → Servicios (APIs y núcleos).
+#   data  → Datos (PostgreSQL, Redis, MongoDB, MinIO). En producción es `internal: true`
+#           (docker-compose.production.yml); aquí no, porque una red interna no admite los
+#           puertos de depuración que se publican en 127.0.0.1.
+#   media → MinIO y gateway: las URLs firmadas llegan al navegador sin pasar por `data`.
+# coturn usa la red del host (necesita un rango UDP amplio) y env-check no necesita red.
+networks:
+  edge:
+  app:
+  data:
+  media:
 
 volumes:
   gateway-data:
