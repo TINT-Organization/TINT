@@ -116,7 +116,7 @@ Además aparecen abiertos puertos propios del sistema operativo del servidor (SS
 ## 3. Lectura de los resultados
 
 - La línea base es estable: la variación entre corridas es de ~0,2 ms en el p95 de la API y de algunos ms en Sync. Una medida de seguridad solo es concluyente si cambia una métrica por más que ese rango (`bench/summarize.py` lo marca).
-- El escenario 1 ya cumple "TLS 1.2 o superior" en `develop`. Lo que falta medir como mejora es HSTS (P8) y MinIO en claro (P9).
+- El escenario 1 ya cumple "TLS 1.2 o superior" en `develop`. Lo que falta medir como mejora es HSTS (P8) y MinIO en claro (P9); el resultado del "después" está en [pruebas-seguridad.md](pruebas-seguridad.md#resultados-escenario-1-canal-seguro-antes-y-después-de-hsts).
 - El escenario 2 parte de 0 respuestas 429 (P4), de 401 sin token en la ruta interna (P10) y del header `Server` expuesto (P12).
 - El escenario 3 parte de 4 almacenes alcanzables desde la LAN (P13).
 - Los escenarios 4 y 5 no tienen prueba en esta línea base: dependen de medidas que aún no existen (audiencia por servicio y bitácora) y se medirán con el "después".

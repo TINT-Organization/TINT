@@ -14,6 +14,8 @@
 | [Contrato de eventos de analítica](contrato-eventos-analitica.md) | Qué publica cada servicio en `analytics:events` y qué entrega Analítica a cambio (tablas y API de lectura de KPIs). |
 | [Pruebas de seguridad y rendimiento](pruebas-seguridad.md) | Banco de medición del Prototipo 3: método, cómo correrlo y línea base antes de las medidas de seguridad. |
 | ↳ [Evidencia de la línea base](evidencia-linea-base.md) | Qué prueba se aplicó, con qué herramienta y qué resultado dio cada una en `develop`. |
+| ↳ [Rendimiento por usuarios concurrentes (Lab 6)](pruebas-rendimiento-lab6.md) | Curva y knee por VUs de sync-ticket, playback, el gateway por capas y claim. |
+| ↳ [Resultados del Lab 6](resultados-rendimiento-lab6.md) | Curva, knee y recursos por endpoint de la corrida del 2026-11-16. |
 | [Bug hunting 2026-10](bug-hunting-2026-10.md) | Hallazgos de la ronda de bug hunting de octubre de 2026 y cómo se corrigieron. |
 
 ## README de cada servicio
