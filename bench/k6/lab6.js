@@ -23,6 +23,7 @@
 import http from 'k6/http';
 import exec from 'k6/execution';
 import { check, sleep } from 'k6';
+import { Counter } from 'k6/metrics';
 import { BASE_URL, authHeaders, jsonHeaders, seed } from './lib.js';
 
 const TARGET = __ENV.TARGET || 'sync-ticket';
@@ -47,6 +48,10 @@ for (const vus of LEVELS) {
     thresholds[`http_req_duration{${t}}`] = ['max>=0'];
     thresholds[`http_req_failed{${t}}`] = ['rate>=0'];
     thresholds[`http_reqs{${t}}`] = ['count>=0'];
+    // 429 del límite de tasa (desde el escenario 2, ADR 0028): cuentan como fallos para el knee y se
+    // desglosan aquí para distinguir "el límite actuó" de "el sistema se saturó".
+    thresholds[`status_429{${t}}`] = ['count>=0'];
+    thresholds[`status_5xx{${t}}`] = ['count>=0'];
   }
 }
 
@@ -75,6 +80,9 @@ function currentLevel() {
   }
   return 'ramp';
 }
+
+const status429 = new Counter('status_429');
+const status5xx = new Counter('status_5xx');
 
 const ok = { 'respuesta 2xx': (r) => r.status >= 200 && r.status < 300 };
 
@@ -108,8 +116,11 @@ if (!TARGETS[TARGET]) {
 export default function (data) {
   const s = data.seeded[exec.vu.idInTest % data.seeded.length];
   const tags = { level: currentLevel(), target: TARGET };
-  for (const res of TARGETS[TARGET](s, tags)) {
+  TARGETS[TARGET](s, tags).forEach((res, i) => {
     check(res, ok, tags);
-  }
+    const t = TARGET === 'gateway' ? { ...tags, layer: LAYERS[i] } : tags;
+    if (res.status === 429) status429.add(1, t);
+    else if (res.status >= 500 || res.status === 0) status5xx.add(1, t);
+  });
   sleep(SLEEP_S);
 }

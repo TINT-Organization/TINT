@@ -132,6 +132,33 @@ def filter_bench_override(text: str, keep: list[str]) -> str:
     return "".join(out)
 
 
+def built_services(text: str) -> list[str]:
+    """Servicios de un docker-compose.yml que se construyen (`build:`) en vez de usar una imagen publicada."""
+    built, current, inside = [], None, False
+    for line in text.splitlines():
+        if re.match(r"^services:\s*$", line):
+            inside = True
+        elif inside and re.match(r"^\S", line):
+            break
+        elif inside and (m := re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)):
+            current = m.group(1)
+        elif inside and current and re.match(r"^    build:", line) and current not in built:
+            built.append(current)
+    return built
+
+
+def drop_unbuilt_images(override: str, built: list[str]) -> str:
+    """Quita el `image:` del override en servicios que el commit no construye (p. ej. Caddy de imagen oficial en 5767874)."""
+    out, current = [], None
+    for line in override.splitlines(keepends=True):
+        if m := re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line):
+            current = m.group(1)
+        elif current and current not in built and re.match(r"^    image:", line):
+            continue
+        out.append(line)
+    return "".join(out)
+
+
 def compose_file_value(bench_dir: str, extra: str = "") -> str:
     """COMPOSE_FILE del banco: el Compose del repo, el override del banco y, si se pide, otro más."""
     files = ["docker-compose.yml", f"{bench_dir}\\compose.bench.yml"]
@@ -228,6 +255,7 @@ def prepare_local(ctx: Ctx, args: argparse.Namespace) -> None:
         raise RuntimeError(f"git archive {commit} falló")
     compose_text = (dest / "docker-compose.yml").read_text(encoding="utf-8")
     override = filter_bench_override((BENCH / "compose.bench.yml").read_text(encoding="utf-8"), compose_services(compose_text))
+    override = drop_unbuilt_images(override, built_services(compose_text))
     (dest / ".bench").mkdir()
     (dest / LOCAL_OVERRIDE).write_text(override, encoding="utf-8")
     (dest / ".bench" / "commit").write_text(commit + "\n")

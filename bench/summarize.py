@@ -122,6 +122,8 @@ def level_curve(data: dict, hold_s: float, tag: str | None = None) -> list[dict]
         elif match["metric"] == "http_reqs":
             point["reqs"] = int(values.get("count", 0))
             point["rps"] = round(values.get("count", 0) / hold_s, 2)
+        elif match["metric"] in ("status_429", "status_5xx"):  # desglose de fallos (lab6.js desde el escenario 2)
+            point[match["metric"].replace("status_", "s")] = int(values.get("count", 0))
     return [points[k] for k in sorted(points) if "p95_ms" in points[k]]
 
 
@@ -145,12 +147,14 @@ def find_knee(curve: list[dict], latency_factor: float = 10.0) -> dict:
 
 
 def curve_markdown(curve: list[dict], knee: dict) -> str:
-    rows = ["| VUs | avg (ms) | p95 (ms) | p99 (ms) | req/s | Peticiones | Fallos |",
-            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    by_status = any("s429" in p or "s5xx" in p for p in curve)
+    rows = ["| VUs | avg (ms) | p95 (ms) | p99 (ms) | req/s | Peticiones | Fallos |" + (" 429 | 5xx/0 |" if by_status else ""),
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |" + (" ---: | ---: |" if by_status else "")]
     for p in curve:
         mark = " ← knee" if p["vus"] == knee["knee_vus"] else (" ← degrada" if p["vus"] == knee["degraded_vus"] else "")
+        extra = f" {p.get('s429', 0):.0f} | {p.get('s5xx', 0):.0f} |" if by_status else ""
         rows.append(f"| {p['vus']}{mark} | {p['avg_ms']:.2f} | {p['p95_ms']:.2f} | {p.get('p99_ms', 0.0):.2f} | "
-                    f"{p.get('rps', 0.0):.1f} | {p.get('reqs', 0)} | {p.get('failed', 0.0):.2%} |")
+                    f"{p.get('rps', 0.0):.1f} | {p.get('reqs', 0)} | {p.get('failed', 0.0):.2%} |{extra}")
     rows.append("")
     rows.append(f"Knee: {knee['knee_vus']} VUs; primer nivel degradado: {knee['degraded_vus'] or '-'} ({knee['reason']}).")
     return "\n".join(rows) + "\n"

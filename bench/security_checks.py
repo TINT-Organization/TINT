@@ -4,7 +4,8 @@
 Uso:  python3 bench/security_checks.py --ip 192.168.1.7 --https-port 8443 --out results/antes-develop/security.json
 
 Corre desde el portátil, es decir, desde fuera del servidor: mide lo que ve un atacante en la red.
-Requiere nmap y curl; testssl.sh es opcional (si falta, se omite esa parte y queda dicho).
+Requiere curl. Con nmap y testssl.sh los usa; sin ellos cae a un escaneo TCP por connect() de Python
+(los 65 535 puertos) y a `openssl s_client` por versión de TLS, y lo deja dicho en el resultado.
 """
 
 from __future__ import annotations
@@ -89,13 +90,52 @@ def tcp_open(ip: str, port: int) -> bool:
         return False
 
 
+def connect_scan(ip: str, ports: range = range(1, 65536), workers: int = 512) -> list[int]:
+    """Escaneo TCP por connect() (respaldo cuando no hay nmap)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def is_open(port: int) -> int | None:
+        try:
+            with socket.create_connection((ip, port), timeout=0.5):
+                return port
+        except OSError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return sorted(p for p in pool.map(is_open, ports) if p)
+
+
+OPENSSL_FLAGS = {"TLS1": "-tls1", "TLS1_1": "-tls1_1", "TLS1_2": "-tls1_2", "TLS1_3": "-tls1_3"}
+
+
+def openssl_protocols(ip: str, port: int) -> dict:
+    """Versiones de TLS que acepta el servidor, con `openssl s_client` (respaldo cuando no hay testssl.sh).
+
+    SECLEVEL=0 deja al cliente ofrecer TLS 1.0/1.1: si el servidor las acepta, se ve.
+    """
+    offered = []
+    for name, flag in OPENSSL_FLAGS.items():
+        cmd = ["openssl", "s_client", "-connect", f"{ip}:{port}", "-servername", "localhost", flag]
+        if name in ("TLS1", "TLS1_1"):
+            cmd += ["-cipher", "DEFAULT@SECLEVEL=0"]
+        out = subprocess.run(cmd, input="", capture_output=True, text=True, timeout=15)
+        if out.returncode == 0 and "Cipher is (NONE)" not in out.stdout and "New, " in out.stdout:
+            offered.append(name)
+    return {"offered": offered, "legacy_offered": sorted(set(offered) & LEGACY), "tool": "openssl s_client"}
+
+
 def run_checks(ip: str, https_port: int, project: str) -> dict:
     base = f"https://localhost:{https_port}"  # el sitio de Caddy es https://localhost
     resolve = f"localhost:{https_port}:{ip}"
     result: dict = {"target": ip, "taken_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
 
-    scan = subprocess.run(["nmap", "-Pn", "-p-", "--min-rate", "2000", "-oG", "-", ip], capture_output=True, text=True)
-    open_ports = parse_nmap_open_ports(scan.stdout)
+    if shutil.which("nmap"):
+        scan = subprocess.run(["nmap", "-Pn", "-p-", "--min-rate", "2000", "-oG", "-", ip], capture_output=True, text=True)
+        open_ports = parse_nmap_open_ports(scan.stdout)
+        result["scanner"] = "nmap"
+    else:
+        open_ports = connect_scan(ip)
+        result["scanner"] = "connect() de Python"
     result["open_ports"] = open_ports
     result["db_ports_open"] = {name: port in open_ports for port, name in DB_PORTS.items()}
 
@@ -124,7 +164,7 @@ def run_checks(ip: str, https_port: int, project: str) -> dict:
                        capture_output=True, text=True, timeout=300, env=env)
         result["tls"] = testssl_protocols(json.loads(out.read_text())) if out.exists() else {"error": "sin salida"}
     else:
-        result["tls"] = {"skipped": "testssl.sh no está instalado"}
+        result["tls"] = openssl_protocols(ip, https_port)
     return result
 
 
