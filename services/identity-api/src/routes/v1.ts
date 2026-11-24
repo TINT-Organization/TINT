@@ -1,4 +1,5 @@
-import { Router, type Response } from 'express';
+import { Router, type Request, type RequestHandler, type Response } from 'express';
+import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { env } from '../config/env.js';
 import { logger } from '../logging.js';
@@ -7,13 +8,24 @@ import { requireAuthHost } from '../middlewares/auth.js';
 import { centralTokenCheck } from '../middlewares/centralAuth.js';
 import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
 import { upsertByProvider, findById as findUserById } from '../modules/users/users.repo.js';
-import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
+import { requireRoomGuest, requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
 import { requireActiveRoom, requireReadableRoom, inactiveRoomError } from '../middlewares/activeRoom.js';
 import { createRoomWithInvitation } from '../modules/rooms/rooms.create.js';
 import { listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
-import { issueGuestToken, generateHostTicket } from '../modules/auth/auth.service.js';
-import { legacyAudienceOr, serviceAudience } from '../modules/auth/audiences.js';
+import {
+  issueGuestToken,
+  generateHostTicket,
+  issueHostServiceTicket,
+  issueGuestServiceTicket,
+} from '../modules/auth/auth.service.js';
+import {
+  GUEST_TICKET_SERVICES,
+  isTicketService,
+  legacyAudienceOr,
+  serviceAudience,
+  type TicketService,
+} from '../modules/auth/audiences.js';
 import { publishAnalyticsEvent } from '../modules/analytics/analytics.events.js';
 import { auditDenied, auditHostAction, publishAuditEvent } from '../modules/audit/audit.events.js';
 import { getMediaSigner } from '../modules/media/media.signer.js';
@@ -336,6 +348,95 @@ router.post('/rooms/:id/analytics-ticket', requireAuthHost, requireRoomOwner, as
   });
   res.json({ token, expiresAt: expiresAt.toISOString() });
 });
+
+/** Ejecuta middlewares en orden; el siguiente solo corre si el anterior llamó a `next()`. */
+function chain(...handlers: RequestHandler[]): RequestHandler {
+  return (req, res, next) => {
+    let index = 0;
+    const step = (err?: unknown) => {
+      if (err) return next(err);
+      const handler = handlers[index++];
+      if (!handler) return next();
+      Promise.resolve(handler(req, res, step)).catch(next);
+    };
+    step();
+  };
+}
+
+function ticketServiceParam(req: Request): TicketService {
+  return paramId((req.params as Record<string, string>).service) as TicketService;
+}
+
+const requireTicketService: RequestHandler = (req, res, next) => {
+  if (!isTicketService(paramId((req.params as Record<string, string>).service))) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  next();
+};
+
+// Host con la sala `disabled`: solo lo que se lee de una sala terminada (historial del chat en
+// social-core y KPIs). Lo en vivo (sync, voz, transmisión) → 410 Disabled (ADR 0019).
+const HOST_READABLE_WHEN_DISABLED: ReadonlySet<TicketService> = new Set(['social', 'analytics']);
+
+const requireHostTicketRoom: RequestHandler = (req, res, next) => {
+  const service = ticketServiceParam(req);
+  // analytics conserva la regla de analytics-ticket: los KPIs se ven también con la sala borrada.
+  if (service === 'analytics') return next();
+  return requireReadableRoom(req, res, () => {
+    if (req.room?.status === 'disabled' && !HOST_READABLE_WHEN_DISABLED.has(service)) {
+      return res.status(410).json({ error: 'Disabled' });
+    }
+    next();
+  });
+};
+
+const requireGuestTicketService: RequestHandler = (req, res, next) => {
+  if (!GUEST_TICKET_SERVICES.has(ticketServiceParam(req))) {
+    void auditDenied({ roomId: getRoomId(req) });
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+};
+
+/** Un invitado bloqueado en la sala no obtiene tickets (por dispositivo o, cliente viejo, por `sub`). */
+const requireGuestNotBanned: RequestHandler = async (req, res, next) => {
+  const roomId = getRoomId(req);
+  const deviceId = req.guestSession?.deviceId;
+  try {
+    const banned =
+      (deviceId ? await findBanByDevice(roomId, deviceId) : null) ?? (await findBanBySub(roomId, req.guest!.sub));
+    if (banned) {
+      void auditDenied({ roomId });
+      return res.status(403).json({ error: 'BANNED' });
+    }
+  } catch (err) {
+    logger.error('tickets: no se pudo comprobar el bloqueo', { error: (err as Error).message });
+    return res.status(503).json({ error: 'Service unavailable' });
+  }
+  next();
+};
+
+const hostTicketAuth = chain(requireAuthHost, requireRoomOwner, requireHostTicketRoom);
+const guestTicketAuth = chain(requireRoomGuest, requireGuestTicketService, requireGuestNotBanned, requireActiveRoom);
+
+// Un ticket por servicio (ADR 0030, mínimo privilegio). Un HS256 es la sesión del invitado; cualquier
+// otro token (ID token de Firebase) va por el camino del host dueño.
+router.post(
+  '/rooms/:id/tickets/:service',
+  requireTicketService,
+  (req, res, next) => {
+    const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.substring(7) : null;
+    const decoded = token ? (jwt.decode(token, { complete: true }) as jwt.Jwt | null) : null;
+    return (decoded?.header?.alg === 'HS256' ? guestTicketAuth : hostTicketAuth)(req, res, next);
+  },
+  (req, res) => {
+    const service = ticketServiceParam(req);
+    const ticket = req.guest
+      ? issueGuestServiceTicket(req.guest, service)
+      : issueHostServiceTicket({ userId: req.user!.id, roomId: getRoomId(req), nick: hostNick(req.user!) }, service);
+    res.json({ token: ticket.token, expires_at: ticket.expiresAt.toISOString(), audience: ticket.audience });
+  },
+);
 
 const mediaKeySchema = z
   .string()
