@@ -122,6 +122,49 @@ describe('requireRoomGuest', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
+  it('ADR 0030: rechaza un ticket de servicio (otra audiencia) como sesión del invitado', async () => {
+    setRevokedKeys();
+    const claims = { room_id: 'room-1', role: 'participant', jti: 'x', sub: 's' };
+    const ticket = jwt.sign(claims, env.JWT_SECRET, { algorithm: 'HS256', issuer: env.JWT_ISSUER, audience: 'tint:sync', expiresIn: 60 });
+    expect((await run(ticket)).res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('ADR 0030: acepta la audiencia legada solo mientras JWT_LEGACY_AUDIENCE tenga valor', async () => {
+    setRevokedKeys();
+    const claims = { room_id: 'room-1', role: 'participant', jti: 'x', sub: 's' };
+    const legacy = jwt.sign(claims, env.JWT_SECRET, { algorithm: 'HS256', issuer: env.JWT_ISSUER, audience: 'tint:room', expiresIn: 60 });
+    expect((await run(legacy)).res.status).toHaveBeenCalledWith(401);
+    env.JWT_LEGACY_AUDIENCE = 'tint:room';
+    try {
+      expect((await run(legacy)).next).toHaveBeenCalled();
+    } finally {
+      env.JWT_LEGACY_AUDIENCE = undefined;
+    }
+  });
+
+  it('el 403 por otra sala publica access.denied sin actor (el sub del invitado no va a la bitácora)', async () => {
+    const xadd = vi.fn(async () => '1-0');
+    setRedisClient({ exists: vi.fn(async () => 0), xadd } as any);
+    const roomId = '11111111-2222-4333-8444-555555555555';
+    const { token } = issueGuestToken('room-2', 'Ana');
+    const { res } = await run(token, roomId);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(xadd).toHaveBeenCalledTimes(1);
+    const args = (xadd.mock.calls[0] as unknown as string[]).slice(5);
+    const fields = Object.fromEntries(args.flatMap((_, i) => (i % 2 === 0 ? [[args[i], args[i + 1]]] : [])));
+    expect(fields).toMatchObject({ action: 'access.denied', outcome: 'denied', room_id: roomId });
+    expect(fields.actor_id).toBeUndefined();
+  });
+
+  it('expone la sesión de BD en req.guestSession', async () => {
+    setRevokedKeys();
+    const { token, payload } = issueGuestToken('room-1', 'Ana');
+    const session = { jti: payload.jti, roomId: 'room-1', revoked: false, deviceId: 'd-1' };
+    vi.mocked(findByJti).mockResolvedValueOnce(session as any);
+    const { req } = await run(token);
+    expect(req.guestSession).toEqual(session);
+  });
+
   it('503 si no se puede comprobar la revocación (falla cerrado)', async () => {
     setRedisClient({ exists: vi.fn().mockRejectedValue(new Error('down')) } as any);
     const { token } = issueGuestToken('room-1', 'Ana');

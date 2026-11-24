@@ -13,6 +13,7 @@ import { createRoomWithInvitation } from '../modules/rooms/rooms.create.js';
 import { listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
 import { issueGuestToken, generateHostTicket } from '../modules/auth/auth.service.js';
+import { legacyAudienceOr, serviceAudience } from '../modules/auth/audiences.js';
 import { publishAnalyticsEvent } from '../modules/analytics/analytics.events.js';
 import { auditDenied, auditHostAction, publishAuditEvent } from '../modules/audit/audit.events.js';
 import { getMediaSigner } from '../modules/media/media.signer.js';
@@ -312,10 +313,12 @@ router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, require
   const rawId = req.params.id;
   const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
   const user = req.user!;
+  // Transición de ADR 0030: audiencia legada mientras la web vieja use este ticket en todos los servicios.
   const { token, expiresAt } = generateHostTicket({
     userId: user.id,
     roomId,
     nick: hostNick(user),
+    audience: legacyAudienceOr(serviceAudience('sync')),
   });
   res.json({ token, expiresAt: expiresAt.toISOString() });
 });
@@ -329,6 +332,7 @@ router.post('/rooms/:id/analytics-ticket', requireAuthHost, requireRoomOwner, as
     userId: user.id,
     roomId: paramId(req.params.id),
     nick: hostNick(user),
+    audience: legacyAudienceOr(serviceAudience('analytics')),
   });
   res.json({ token, expiresAt: expiresAt.toISOString() });
 });
