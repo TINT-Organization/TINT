@@ -72,8 +72,8 @@ int main() {
   };
   auto hub = std::make_shared<hub::Hub>(std::move(options));
 
-  auto verifier =
-      std::make_shared<auth::TokenVerifier>(config->jwt_secret, config->jwt_issuer, config->jwt_audience);
+  auto verifier = std::make_shared<auth::TokenVerifier>(config->jwt_secret, config->jwt_issuer,
+                                                        config->jwt_audience, config->jwt_legacy_audience);
   auto revocation =
       std::make_shared<redis::RedisRevocationChecker>(*endpoint, std::chrono::milliseconds(500));
 

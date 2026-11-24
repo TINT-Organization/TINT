@@ -69,6 +69,16 @@ TEST_F(HandshakeTest, RejectsBadTokensBeforeUpgrade) {
   EXPECT_EQ(revocation.calls, 0) << "no consulta Redis con un token sin firma válida";
 }
 
+// ADR 0030 (AC1): otra audiencia es un token inválido más (401 antes del upgrade).
+TEST_F(HandshakeTest, RejectsTicketsOfOtherServicesLikeAnInvalidToken) {
+  for (const char* aud : {"tint:sync", "tint:social", "tint:stream", "tint:analytics", "tint:api"}) {
+    auto claims = guest_claims();
+    claims["aud"] = aud;
+    EXPECT_EQ(rejected_status(decide(target(sign_jwt(claims)))), 401u) << aud;
+  }
+  EXPECT_EQ(revocation.calls, 0);
+}
+
 TEST_F(HandshakeTest, RejectsTokensOfAnotherRoom) {
   EXPECT_EQ(rejected_status(decide(target(sign_jwt(guest_claims("room-2")), "room-1"))), 403u);
 }
