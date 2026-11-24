@@ -14,7 +14,9 @@ namespace stream::testing {
 
 inline constexpr const char* kSecret = "test-secret";
 inline constexpr const char* kIssuer = "tint-identity";
-inline constexpr const char* kAudience = "tint:room";
+// Audiencia propia de stream-core (ADR 0030) y la legada de la transición.
+inline constexpr const char* kAudience = "tint:stream";
+inline constexpr const char* kLegacyAudience = "tint:room";
 inline constexpr std::int64_t kNow = 1'800'000'000;
 
 inline std::string sign_jwt(const nlohmann::json& payload, std::string_view secret = kSecret,

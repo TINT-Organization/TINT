@@ -71,6 +71,7 @@ std::expected<Config, std::string> load_config(const EnvLookup& env) {
   }
   if (auto v = get("JWT_ISSUER"); !v.empty()) cfg.jwt_issuer = v;
   if (auto v = get("JWT_AUDIENCE"); !v.empty()) cfg.jwt_audience = v;
+  cfg.jwt_legacy_audience = get("JWT_LEGACY_AUDIENCE");
 
   auto origins = get("ALLOWED_ORIGINS");
   cfg.allowed_origins = split_csv(origins.empty() ? "localhost:5173,127.0.0.1:5173" : origins);

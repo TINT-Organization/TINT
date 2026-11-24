@@ -50,6 +50,9 @@ fi
 
 JWT_SECRET="${JWT_SECRET:-$(grep -E '^JWT_SECRET=' "$ROOT/.env" 2>/dev/null | cut -d= -f2- || true)}"
 JWT_SECRET="${JWT_SECRET:-dev-secret-change-in-prod}"
+# Audiencia del ticket (ADR 0030): la del entorno o la del .env (la que compose le da a stream-core);
+# vacía, el bot usa la propia del servicio (tint:stream).
+JWT_AUDIENCE="${JWT_AUDIENCE:-$(grep -E '^JWT_AUDIENCE=' "$ROOT/.env" 2>/dev/null | cut -d= -f2- || true)}"
 
 echo "==> compilando stream_core_loadbot (imagen dev)"
 docker build -q --target dev -t "$DEV_IMAGE" "$SVC" >/dev/null
@@ -79,7 +82,7 @@ stats_pid=$!
 top_pid=$!
 
 set +e
-docker run --rm --user "$(id -u):$(id -g)" --network host -e JWT_SECRET="$JWT_SECRET" -v "$SVC:/src" -w /src \
+docker run --rm --user "$(id -u):$(id -g)" --network host -e JWT_SECRET="$JWT_SECRET" -e JWT_AUDIENCE="$JWT_AUDIENCE" -v "$SVC:/src" -w /src \
   "$DEV_IMAGE" ./build-load/stream_core_loadbot --url "$URL" --viewers "$VIEWERS" --duration "$DURATION"
 bot_status=$?
 set -e
