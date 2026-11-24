@@ -167,22 +167,38 @@ Las migraciones se generan con `drizzle-kit generate` y se aplican con `npx driz
 
 ## 4. Esquemas de tokens
 
+Desde [ADR 0030](adr/0030-tickets-por-servicio-minimo-privilegio.md) (Escenario 4, mínimo privilegio) cada servicio verifica **su propia audiencia** y un ticket solo abre el servicio para el que se emitió:
+
+| Audiencia | La verifica | Token que la lleva |
+| :--- | :--- | :--- |
+| `tint:api` | identity-api (REST) y su `auth/check` para rutas de identity-api | guest token |
+| `tint:sync` | sync-core (`/ws/sync`) | ticket `sync` |
+| `tint:social` | social-core (`/ws/social`, `GET /api/v1/social/...`) | ticket `social` |
+| `tint:voice` | voice-core (`/ws/voice`, `/api/v1/voice/...`) | ticket `voice` |
+| `tint:stream` | stream-core (`/api/v1/stream/...`) | ticket `stream` |
+| `tint:analytics` | analytics (`/kpis`, `/reactions/heatmap`, `/timeline`) | ticket `analytics` |
+
 ```mermaid
 flowchart TB
     FB["ID token de Firebase<br/>RS256 · Google lo emite · ~1 h"]
-    GT["Guest token<br/>HS256 · identity-api · 4 h"]
-    ST["Sync-ticket<br/>HS256 · identity-api · 10 min"]
-    AT["Analytics-ticket<br/>HS256 · identity-api · 10 min"]
+    GT["Guest token<br/>HS256 · identity-api · 4 h · aud tint:api"]
+    TK["Ticket de servicio<br/>HS256 · identity-api · 10 min · aud tint:&lt;servicio&gt;"]
 
     FB -- "Authorization: Bearer" --> API["identity-api<br/>requireAuthHost (JWKS de Google)"]
-    GT -- "Authorization: Bearer" --> API2["identity-api<br/>requireRoomGuest (JWT_SECRET)"]
-    GT -- "?token=" --> SC["sync-core /ws/sync<br/>auth.Verifier (JWT_SECRET)"]
-    ST -- "?token=" --> SC
-    FB -- "POST /rooms/:id/sync-ticket" --> ST
-    FB -- "POST /rooms/:id/analytics-ticket" --> AT
-    AT -- "Authorization: Bearer" --> AN["analytics /api/v1/rooms/:id/…<br/>(JWT_SECRET + revocación)"]
+    GT -- "Authorization: Bearer" --> API2["identity-api<br/>requireRoomGuest (JWT_SECRET, aud tint:api)"]
+    FB -- "POST /rooms/:id/tickets/:service<br/>(los cinco)" --> TK
+    GT -- "POST /rooms/:id/tickets/:service<br/>(sync, social, voice, stream)" --> TK
+    TK -- "?token= / Bearer" --> SVC["sync-core · social-core · voice-core<br/>stream-core · analytics<br/>(cada uno solo su audiencia)"]
     INV["código de invitación"] -- "POST /invitations/claim" --> GT
 ```
+
+#### Transición (`JWT_LEGACY_AUDIENCE`)
+Para mergear por dominio sin romper nada, mientras `JWT_LEGACY_AUDIENCE` tenga valor (`.env.example`: `tint:room`):
+- los verificadores aceptan la audiencia legada **además** de la propia (vacía = desactivada, falla cerrado; AC5);
+- identity-api emite con ella el **guest token** (la web vieja lo usa directo en los WebSocket), el **sync-ticket** y el **analytics-ticket**; sin ella, el guest token lleva `tint:api`, el sync-ticket `tint:sync` y el analytics-ticket `tint:analytics`;
+- los tickets de `POST /rooms/:id/tickets/:service` **nunca** llevan la audiencia legada.
+
+El último PR de la transición (infra) la deja vacía y retira `sync-ticket` y `analytics-ticket`.
 
 ### ID token de Firebase (Host)
 Lo emite Google al iniciar sesión con `signInWithPopup` y la web lo guarda en `localStorage.tint_token`. identity-api lo verifica así:
@@ -217,14 +233,39 @@ En modo emulador los tokens RS256 de Google se siguen verificando con el JWKS. E
   "nick": "Luis",                // 1–64 caracteres
   "jti": "<uuid>",               // = guest_sessions.jti, permite revocarlo
   "iss": "tint-identity",
-  "aud": "tint:room",
+  "aud": "tint:api",             // JWT_LEGACY_AUDIENCE (tint:room) mientras dure la transición
   "iat": 1791655200,
   "exp": 1791669600              // iat + GUEST_TOKEN_TTL_HOURS (4 h)
 }
 ```
-Se firma con HS256 y `JWT_SECRET`. La web lo guarda en `localStorage.tint_guest_token`.
+Se firma con HS256 y `JWT_SECRET`. La web lo guarda en `localStorage.tint_guest_token`. Es la **sesión** del invitado: sirve contra identity-api y para pedir sus tickets de servicio, no para abrir los canales (salvo con la audiencia legada durante la transición).
 
-### Sync-ticket (Host → Canal Sync)
+### Ticket de servicio (ADR 0030)
+`POST /api/v1/rooms/:id/tickets/:service`, `service ∈ {sync, social, voice, stream, analytics}` → `200 { "token", "expires_at", "audience" }`.
+
+```json
+{
+  "sub": "<users.id> | guest:3f2c…",
+  "room_id": "<uuid sala>",
+  "role": "host | participant",
+  "nick": "…",
+  "jti": "<uuid>",               // host: nuevo; invitado: el de su sesión
+  "iss": "tint-identity", "aud": "tint:voice",
+  "iat": 1791655200, "exp": 1791655800   // + SERVICE_TICKET_TTL_SECONDS (600)
+}
+```
+
+| Llamante | Servicios | Claims |
+| :--- | :--- | :--- |
+| Host dueño (ID token de Firebase; guardas del sync-ticket) | los cinco | `role: host`, `jti` nuevo, `nick` como el sync-ticket |
+| Invitado de la sala (guest token, no revocado ni bloqueado) | `sync`, `social`, `voice`, `stream` | `role: participant`, **mismo `sub`, `nick` y `jti` que su sesión**; `exp` ≤ `exp` de la sesión |
+
+- **Errores:** servicio desconocido `404`; invitado pidiendo `analytics` o con el token de otra sala `403` (AC3, `access.denied` en la bitácora); invitado bloqueado `403 BANNED`; sesión revocada `401`; sala deshabilitada `410 {error:"Disabled"}` (ADR 0019). El host con la sala `disabled` aún obtiene `social` (historial del chat) y `analytics` (KPIs); `analytics` también con la sala borrada, como el analytics-ticket.
+- **Revocación:** el ticket del invitado hereda el `jti` de su sesión, así que retirarlo (`token:revoked:{jti}`) revoca también los tickets ya emitidos (AC4).
+- **Gateway:** `auth/check` elige la audiencia por la ruta original (`X-Forwarded-Uri`); un HS256 con otra audiencia → `401` (AC2). El ID token de Firebase solo pasa hacia rutas de identity-api.
+- No se guarda: la web pide uno nuevo en cada (re)conexión.
+
+### Sync-ticket (Host → Canal Sync, transición)
 ```json
 {
   "sub": "<users.id>",
@@ -232,29 +273,30 @@ Se firma con HS256 y `JWT_SECRET`. La web lo guarda en `localStorage.tint_guest_
   "role": "host",
   "nick": "display_name, o la parte local del email, o 'Host'",
   "jti": "<uuid>",
-  "iss": "tint-identity", "aud": "tint:room",
+  "iss": "tint-identity", "aud": "tint:room",   // JWT_LEGACY_AUDIENCE; sin ella, tint:sync
   "iat": 1791655200, "exp": 1791655800   // + SYNC_TICKET_TTL_SECONDS (600)
 }
 ```
-No se guarda: la web pide uno nuevo en cada (re)conexión del WebSocket.
+No se guarda: la web pide uno nuevo en cada (re)conexión del WebSocket. Se retira al cerrar la transición de ADR 0030 (lo sustituye el ticket `sync`).
 
-### Analytics-ticket (Host → API de analytics)
+### Analytics-ticket (Host → API de analytics, transición)
 `POST /rooms/:id/analytics-ticket` (ID token de Firebase + dueño de la sala) → `{ token, expiresAt }`, igual que el sync-ticket.
 
-- **Claims:** los mismos del sync-ticket (`sub` = `users.id`, `room_id`, `role: "host"`, `nick`, `jti`, `iss`, `aud`, `iat`, `exp`); lo firma la misma función (`generateHostTicket`).
+- **Claims:** los mismos del sync-ticket (`sub` = `users.id`, `room_id`, `role: "host"`, `nick`, `jti`, `iss`, `aud`, `iat`, `exp`); lo firma la misma función (`generateHostTicket`). `aud` = `JWT_LEGACY_AUDIENCE` o, sin ella, `tint:analytics`. Se retira al cerrar la transición (lo sustituye el ticket `analytics`).
 - **Vida:** `SYNC_TICKET_TTL_SECONDS` (600 s); no se guarda, la web pide otro al caducar.
 - **Salas cerradas:** la ruta no usa `requireActiveRoom`, así que el dueño también lo obtiene para una sala con borrado lógico y puede consultar sus KPIs. `requireRoomOwner` no filtra por estado.
 - **Quién lo acepta:** la API de lectura de analytics exige `role: "host"` y que `room_id` coincida con la sala de la ruta, y comprueba `token:revoked:{jti}` (falla cerrado).
 
-| | Firebase | Guest token | Sync-ticket | Analytics-ticket |
-| :--- | :--- | :--- | :--- | :--- |
-| Firma | RS256 (Google) | HS256 (`JWT_SECRET`) | HS256 (`JWT_SECRET`) | HS256 (`JWT_SECRET`) |
-| Vida | ~1 h | 4 h | 10 min | 10 min |
-| `role` | — | `participant` | `host` | `host` |
-| Revocable | En Firebase | ✅ (`guest_sessions` + `token:revoked:{jti}`) | No (vida corta) | No (vida corta) |
-| Dónde vive en la web | `localStorage.tint_token` | `localStorage.tint_guest_token` | Memoria | Memoria |
+| | Firebase | Guest token | Ticket de servicio | Sync-ticket (transición) | Analytics-ticket (transición) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| Firma | RS256 (Google) | HS256 (`JWT_SECRET`) | HS256 (`JWT_SECRET`) | HS256 (`JWT_SECRET`) | HS256 (`JWT_SECRET`) |
+| `aud` | proyecto de Firebase | `tint:api` (o legada) | `tint:<servicio>` | legada o `tint:sync` | legada o `tint:analytics` |
+| Vida | ~1 h | 4 h | 10 min (≤ sesión del invitado) | 10 min | 10 min |
+| `role` | — | `participant` | `host` / `participant` | `host` | `host` |
+| Revocable | En Firebase | ✅ (`guest_sessions` + `token:revoked:{jti}`) | El del invitado, con su sesión (mismo `jti`); el del host no (vida corta) | No (vida corta) | No (vida corta) |
+| Dónde vive en la web | `localStorage.tint_token` | `localStorage.tint_guest_token` | Memoria | Memoria | Memoria |
 
-> `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` **deben ser idénticos** en identity-api, sync-core, social-core y analytics.
+> `JWT_SECRET` y `JWT_ISSUER` **deben ser idénticos** en identity-api y en todos los servicios que verifican HS256. `JWT_AUDIENCE` es distinta por servicio (la tabla de arriba) y `JWT_LEGACY_AUDIENCE`, igual en todos mientras dure la transición.
 
 ---
 
