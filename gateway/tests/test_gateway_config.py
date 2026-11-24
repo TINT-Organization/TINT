@@ -219,9 +219,9 @@ class GatewayReverseProxyHardeningTests(unittest.TestCase):
             self.caddyfile,
         )
 
-    def test_hsts_is_left_to_scenario_1(self):
-        # HSTS es de Secure Channel (escenario 1); este cambio no lo agrega para no pisarlo.
-        self.assertNotIn("Strict-Transport-Security", self.caddyfile)
+    def test_hsts_comes_only_from_scenario_1(self):
+        # HSTS es de Secure Channel (escenario 1, ADR 0029): una sola cabecera, no duplicada aquí.
+        self.assertEqual(self.caddyfile.count("Strict-Transport-Security"), 1)
 
 
 class GatewayImageTests(unittest.TestCase):
