@@ -13,12 +13,18 @@ if [[ -z "${JWT_SECRET:-}" && -f "$root/.env" ]]; then
   JWT_SECRET="$(grep -E '^JWT_SECRET=' "$root/.env" | cut -d= -f2- | tr -d '"')"
 fi
 JWT_SECRET="${JWT_SECRET:-dev-secret-change-in-prod}"
+# Audiencia (ADR 0030): del entorno o del .env (la que compose le da a voice-core); vacía, el E2E
+# usa la propia del servicio (tint:voice).
+if [[ -z "${JWT_AUDIENCE:-}" && -f "$root/.env" ]]; then
+  JWT_AUDIENCE="$(grep -E '^JWT_AUDIENCE=' "$root/.env" | cut -d= -f2- | tr -d '"' || true)"
+fi
 
 image="minlag/mermaid-cli:11.4.2"
 status=0
 for mode in ${MODES:-normal relay}; do
   docker run --rm --network host --entrypoint node \
     -e JWT_SECRET="$JWT_SECRET" \
+    -e JWT_AUDIENCE="${JWT_AUDIENCE:-}" \
     -e WEB_URL="${WEB_URL:-http://localhost:5173}" \
     -e VOICE_HTTP="${VOICE_HTTP:-http://localhost:8085}" \
     -v "$here:/e2e:ro" "$image" /e2e/voice-e2e.cjs "$mode" || status=1

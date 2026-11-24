@@ -34,22 +34,29 @@ TURN_ADDR = (os.environ.get("TURN_HOST", "127.0.0.1"), int(os.environ.get("TURN_
 TIMEOUT = 5.0
 
 
-def jwt_secret():
-    if os.environ.get("JWT_SECRET"):
-        return os.environ["JWT_SECRET"]
+def env_value(name, default):
+    """Del entorno, del .env de la raíz (lo que compose le da a voice-core) o el valor por defecto."""
+    if os.environ.get(name):
+        return os.environ[name]
     env_file = pathlib.Path(__file__).resolve().parents[3] / ".env"
     if env_file.exists():
         for line in env_file.read_text().splitlines():
-            if line.startswith("JWT_SECRET="):
-                return line.split("=", 1)[1].strip().strip('"')
-    return "dev-secret-change-in-prod"
+            if line.startswith(f"{name}="):
+                value = line.split("=", 1)[1].strip().strip('"')
+                if value:
+                    return value
+    return default
+
+
+def jwt_secret():
+    return env_value("JWT_SECRET", "dev-secret-change-in-prod")
 
 
 def b64url(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-def make_token(room_id, nick, role="participant", jti=None, exp_in=3600, secret=None, sub=None):
+def make_token(room_id, nick, role="participant", jti=None, exp_in=3600, secret=None, sub=None, aud=None):
     claims = {
         "sub": sub or f"u-{nick.lower()}-{uuid.uuid4().hex[:6]}",
         "room_id": room_id,
@@ -57,7 +64,7 @@ def make_token(room_id, nick, role="participant", jti=None, exp_in=3600, secret=
         "nick": nick,
         "jti": jti or uuid.uuid4().hex,
         "iss": os.environ.get("JWT_ISSUER", "tint-identity"),
-        "aud": os.environ.get("JWT_AUDIENCE", "tint:room"),
+        "aud": aud or env_value("JWT_AUDIENCE", "tint:voice"),  # propia (ADR 0030)
         "exp": int(time.time()) + exp_in,
     }
     head = b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
@@ -253,6 +260,17 @@ def _():
 @check("token con firma inválida → 401 antes del upgrade")
 def _():
     token, _ = make_token(ROOM, "Mallory", secret="otro-secreto")
+    try:
+        WS(ROOM, token)
+    except HandshakeRejected as e:
+        assert e.status == 401, e.status
+        return
+    raise AssertionError("se aceptó el upgrade")
+
+
+@check("ADR 0030: ticket de otro servicio (tint:sync) → 401 antes del upgrade")
+def _():
+    token, _ = make_token(ROOM, "Mallory", aud="tint:sync")
     try:
         WS(ROOM, token)
     except HandshakeRejected as e:
