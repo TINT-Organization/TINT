@@ -54,6 +54,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.tint.app.AppContainer
 import com.tint.app.live.WebRtcEnv
+import com.tint.app.net.TicketService
 import com.tint.app.sync.OkHttpSyncSocketFactory
 import com.tint.app.voice.VoiceClient
 import com.tint.app.voice.VoiceMeshFactory
@@ -80,7 +81,7 @@ fun rememberVoiceClient(roomId: String, container: AppContainer, sharedEnv: WebR
     val voice = remember(roomId) {
         VoiceClient(
             roomId = roomId,
-            token = { container.tokens.guestToken },
+            token = { container.tickets.token(roomId, TicketService.VOICE) },
             urlFor = container.endpoints::voiceUrl,
             sockets = OkHttpSyncSocketFactory(container.http),
             meshes = VoiceMeshFactory { selfId, ice, send, levels -> WebRtcVoiceMesh(env(), selfId, ice, send, levels) },
