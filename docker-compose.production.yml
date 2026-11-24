@@ -1,9 +1,10 @@
 # Despliegue público: se combina con docker-compose.yml.
-# El gateway conserva 80/443; web, API y canales solo quedan disponibles en la red Compose.
+# Solo nginx (reverse-proxy) publica 80/443 (ADR 0031); web, gateway, API y canales solo quedan
+# disponibles en las redes de Compose.
 # Segmentación de red (escenario 3, ADR 0027): las bases de datos no publican puertos y la red
 # `data` queda aislada (`internal: true`: sus contenedores no tienen salida a Internet).
-# Excepciones documentadas: MinIO 9000 (URLs firmadas; sale cuando el escenario 1 lo publique por
-# el gateway) y el UDP de stream-core (medios WebRTC). coturn usa la red del host.
+# Excepciones documentadas: el UDP de stream-core (medios WebRTC) y coturn (red del host). MinIO ya
+# no publica 9000: los vídeos salen por https://<host>/tint-media/* a través de nginx (escenario 1).
 networks:
   data:
     internal: true
@@ -44,10 +45,10 @@ services:
   mongodb:
     ports: !reset []
 
-  # Solo la API de MinIO (URLs firmadas); la consola 9001 no se publica.
+  # Escenario 1 (ADR 0031): ni la API ni la consola de MinIO se publican; las URLs firmadas
+  # apuntan a https://<host>/tint-media/* y nginx las pasa a MinIO por la red media.
   minio:
-    ports: !override
-      - "9000:9000"
+    ports: !reset []
 
   # Solo el puerto UDP de medios; la señalización WHIP/WHEP entra por el gateway.
   stream-core:

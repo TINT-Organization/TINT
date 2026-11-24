@@ -17,10 +17,9 @@ services:
   mongodb:
     ports: !reset []
 
-  # Solo la API de MinIO (URLs firmadas); la consola 9001 no se publica.
+  # Como en producción (ADR 0031): MinIO no publica nada; los vídeos van por nginx.
   minio:
-    ports: !override
-      - "9000:9000"
+    ports: !reset []
 
   # Solo el puerto UDP de medios; la señalización WHIP/WHEP entra por el gateway.
   stream-core:
