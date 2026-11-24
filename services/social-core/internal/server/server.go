@@ -88,6 +88,7 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		JWTSecret:         getenv("JWT_SECRET"),
 		JWTIssuer:         or(getenv("JWT_ISSUER"), auth.DefaultIssuer),
 		JWTAudience:       or(getenv("JWT_AUDIENCE"), auth.DefaultAudience),
+		JWTLegacyAudience: strings.TrimSpace(getenv("JWT_LEGACY_AUDIENCE")),
 		FirebaseProjectID: getenv("FIREBASE_PROJECT_ID"),
 		HostKeys:          auth.NewGoogleCerts("", nil),
 		AllowedOrigins:    splitList(or(getenv("ALLOWED_ORIGINS"), defaultOrigins)),

@@ -72,7 +72,7 @@ flowchart LR
 | :--- | :--- | :--- |
 | `internal/server` | Arranque y cableado (`DefaultDeps`), handshake y bucle de lectura de `/ws/social`, despacho por `type`, presencia, relay por sala, revocación, ping, y los handlers de reacciones, láser, moderación, encuestas, recap y trivias. | [`server.go`](internal/server/server.go), [`social.go`](internal/server/social.go), [`relay.go`](internal/server/relay.go) |
 | `internal/server` (features) | Un archivo por feature: [`moderation.go`](internal/server/moderation.go), [`laser.go`](internal/server/laser.go), [`polls.go`](internal/server/polls.go), [`recap.go`](internal/server/recap.go), [`trivia.go`](internal/server/trivia.go), [`revocation.go`](internal/server/revocation.go), [`liveness.go`](internal/server/liveness.go). | — |
-| `internal/auth` | Elige el verificador por el `alg` del header: HS256 (identity-api: firma, `iss`, `aud`, `exp`, `sub`, `jti`, `room_id`) o RS256 (Firebase, certificados de Google por `kid` con caché `max-age`). | [`auth.go`](internal/auth/auth.go), [`firebase.go`](internal/auth/firebase.go) |
+| `internal/auth` | Elige el verificador por el `alg` del header: HS256 (identity-api: firma, `iss`, `aud` propia o legada —string o lista—, `exp`, `sub`, `jti`, `room_id`) o RS256 (Firebase, certificados de Google por `kid` con caché `max-age`). | [`auth.go`](internal/auth/auth.go), [`firebase.go`](internal/auth/firebase.go) |
 | `internal/chat` | `Hub` de difusión local por sala (no bloqueante); historial en LIST de Redis o en memoria; `Publish*`/`Subscribe` sobre `room:{id}:social`, `room:{id}:sync` y `room:{id}:stream`; `IsRevoked`, `IsRoomClosed`, `IsLive`, `StreamStartedAt`. | [`hub.go`](internal/chat/hub.go), [`redis.go`](internal/chat/redis.go), [`store.go`](internal/chat/store.go) |
 | `internal/reactions` | Limitadores de ventana deslizante por usuario e IP, con duración de reintento, y `Buckets` (conteo en memoria por sala, ventana de 5 s y emoji, con poda de salas inactivas). | [`limiter.go`](internal/reactions/limiter.go), [`buckets.go`](internal/reactions/buckets.go) |
 | `internal/moderation` | Ajustes del chat y script `admit` (silencio + modo lento en una ida y vuelta). | [`store.go`](internal/moderation/store.go) |
@@ -480,7 +480,8 @@ Fuente: [`internal/server/server.go`](internal/server/server.go), [`docker-compo
 | `SOCIAL_CORE_ADDR` | `:8082` | Dirección de escucha. |
 | `JWT_SECRET` | — (obligatoria) | Secreto HS256 compartido con identity-api. Sin él no arranca. |
 | `JWT_ISSUER` | `tint-identity` | `iss` esperado en HS256. |
-| `JWT_AUDIENCE` | `tint:room` | `aud` esperado en HS256. |
+| `JWT_AUDIENCE` | `tint:room` | Audiencia propia en HS256 (`tint:social` en Compose, ADR 0030). |
+| `JWT_LEGACY_AUDIENCE` | vacía | Audiencia legada aceptada durante la transición (`tint:room`); vacía = desactivada. |
 | `FIREBASE_PROJECT_ID` | vacía | Proyecto de los ID tokens de Firebase; vacía = se rechazan. En docker compose, `tint-login` por defecto. |
 | `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | Orígenes permitidos en el handshake. En docker compose se toma de `SOCIAL_ALLOWED_ORIGINS`. |
 | `REDIS_URL` | vacía (modo memoria, una réplica) | Historial, Pub/Sub, revocación, moderación, encuestas, recap, trivias, analítica y la cola de metadatos del chat. |
