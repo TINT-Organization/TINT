@@ -63,7 +63,7 @@ flowchart LR
 ```
 
 ## Criterios de aceptación (verificables)
-- **AC1:** un ticket `tint:<a>` presentado en el servicio `b ≠ a` se rechaza el 100 % de las veces (WebSocket: cierre `4003`, igual que un token inválido tras el upgrade; REST: `401`). Lo comprueba una prueba por servicio y `bench/` (matriz 5 × 5).
+- **AC1:** un ticket `tint:<a>` presentado en el servicio `b ≠ a` se rechaza el 100 % de las veces con `401`, igual que un token con firma inválida: en WebSocket **antes del upgrade** (primero el `forward_auth` del gateway y, si se llega directo, el propio servicio) y en REST. Se rechaza aunque además esté caducado: la audiencia se comprueba antes que `exp`, así que nunca llega a `4003`. No es un estado terminal que el usuario deba ver (ADR 0014 aplica a caducidad, revocación y sala cerrada), sino un token que nunca fue válido para ese servicio. Lo comprueba una prueba por servicio y `bench/` (matriz 5 × 5).
 - **AC2:** el gateway responde `401` a un HS256 cuya audiencia no corresponde a la ruta.
 - **AC3:** un invitado no obtiene ticket `analytics` (`403`) ni ticket de otra sala (`403`).
 - **AC4:** retirar a un invitado revoca sus tickets ya emitidos (cierre `4001` en el canal abierto).
