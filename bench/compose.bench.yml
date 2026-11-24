@@ -24,6 +24,9 @@ services:
   analytics:
     container_name: !reset null
     image: tint-monorepo-analytics:${BENCH_IMAGE_TAG:-latest}
+  audit-log:
+    container_name: !reset null
+    image: tint-monorepo-audit-log:${BENCH_IMAGE_TAG:-latest}
   social-core:
     container_name: !reset null
     image: tint-monorepo-social-core:${BENCH_IMAGE_TAG:-latest}

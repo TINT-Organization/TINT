@@ -1,5 +1,13 @@
 # Despliegue público: se combina con docker-compose.yml.
 # El gateway conserva 80/443; web, API y canales solo quedan disponibles en la red Compose.
+# Segmentación de red (escenario 3, ADR 0027): las bases de datos no publican puertos y la red
+# `data` queda aislada (`internal: true`: sus contenedores no tienen salida a Internet).
+# Excepciones documentadas: MinIO 9000 (URLs firmadas; sale cuando el escenario 1 lo publique por
+# el gateway) y el UDP de stream-core (medios WebRTC). coturn usa la red del host.
+networks:
+  data:
+    internal: true
+
 services:
   web:
     ports: !reset []
@@ -26,6 +34,25 @@ services:
 
   voice-core:
     ports: !reset []
+
+  postgres:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  mongodb:
+    ports: !reset []
+
+  # Solo la API de MinIO (URLs firmadas); la consola 9001 no se publica.
+  minio:
+    ports: !override
+      - "9000:9000"
+
+  # Solo el puerto UDP de medios; la señalización WHIP/WHEP entra por el gateway.
+  stream-core:
+    ports: !override
+      - "${STREAM_UDP_PORT:-8087}:${STREAM_UDP_PORT:-8087}/udp"
 
   # ADR 0024: el Firebase Auth Emulator (tokens sin firma) es solo de desarrollo. Con un
   # perfil que nadie activa, `up` no lo arranca y `config` no lo incluye.

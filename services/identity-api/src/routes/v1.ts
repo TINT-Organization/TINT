@@ -14,6 +14,7 @@ import { listByHost, findById, softRemoveById, updateTitle, setMedia } from '../
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
 import { issueGuestToken, generateHostTicket } from '../modules/auth/auth.service.js';
 import { publishAnalyticsEvent } from '../modules/analytics/analytics.events.js';
+import { auditDenied, auditHostAction, publishAuditEvent } from '../modules/audit/audit.events.js';
 import { getMediaSigner } from '../modules/media/media.signer.js';
 import { getMediaStore } from '../modules/media/media.store.js';
 import { enqueueMediaUpload } from '../modules/media/media.queue.js';
@@ -88,6 +89,7 @@ router.post('/events/start', requireAuthHost, validate(startEventSchema), async 
       defaultEventStartDeps(),
     );
     res.json(result);
+    void auditHostAction(req.user, 'room.create', result.room.id);
   } catch (error) {
     if (error instanceof EventStartError) {
       logger.error('event-start: fallo al iniciar un servicio', {
@@ -120,6 +122,7 @@ router.post('/rooms', requireAuthHost, validate(createRoomSchema), async (req, r
     },
   });
   void publishAnalyticsEvent('room_created', { room_id: room.id, user_id: req.user!.providerSub });
+  void auditHostAction(req.user, 'room.create', room.id);
 });
 
 router.get('/rooms', requireAuthHost, async (req, res) => {
@@ -177,6 +180,7 @@ router.patch('/rooms/:id', requireAuthHost, requireRoomOwner, validate(updateRoo
   }
   const updated = await updateTitle(roomId, req.body.title);
   res.json({ room: updated });
+  void auditHostAction(req.user, 'room.update', roomId);
 });
 
 /**
@@ -226,6 +230,7 @@ router.delete('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) 
   res.json({ success: true, room: removed });
   // Solo el primer borrado: el reintento (status === 'deleted') no vuelve a cerrar la sala.
   void publishAnalyticsEvent('room_closed', { room_id: roomId, user_id: req.user!.providerSub, reason: 'deleted' });
+  void auditHostAction(req.user, 'room.delete', roomId);
 });
 
 function sendCloseResult(res: Response, result: CloseResult) {
@@ -235,7 +240,9 @@ function sendCloseResult(res: Response, result: CloseResult) {
 
 // Fin de una sala live por el host (HU-LIVE-05, ADR 0019). Una sala watch se borra con DELETE.
 router.post('/rooms/:id/end', requireAuthHost, requireRoomOwner, async (req, res) => {
-  sendCloseResult(res, await closeLiveRoom(getRoomId(req), 'host_ended', req.user!.providerSub));
+  const result = await closeLiveRoom(getRoomId(req), 'host_ended', req.user!.providerSub);
+  sendCloseResult(res, result);
+  if (result.ok) void auditHostAction(req.user, 'room.end', result.body.room_id);
 });
 
 // Una sala deshabilitada no se reactiva: la UI ofrece crear un evento nuevo (HU-LIVE-09 AC4).
@@ -249,7 +256,10 @@ const internalDisableSchema = z
   .object({ reason: z.literal('grace_expired').default('grace_expired') })
   .default({ reason: 'grace_expired' });
 router.post('/internal/rooms/:id/disable', requireInternalToken, validate(internalDisableSchema), async (req, res) => {
-  sendCloseResult(res, await closeLiveRoom(getRoomId(req), req.body.reason));
+  const result = await closeLiveRoom(getRoomId(req), req.body.reason);
+  sendCloseResult(res, result);
+  // Lo pide stream-core, no un usuario: sin actor_id.
+  if (result.ok) void publishAuditEvent({ action: 'room.disable', outcome: 'ok', actorRole: 'service', roomId: result.body.room_id });
 });
 
 const createInvitationSchema = z.object({
@@ -281,6 +291,7 @@ router.post('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, validat
     expiresAt: invitation.expiresAt,
     link: `/invite/${invitation.code}`,
   });
+  void auditHostAction(req.user, 'invitation.create', roomId);
 });
 
 /**
@@ -660,6 +671,7 @@ router.post('/rooms/:id/guests/:jti/revoke', requireAuthHost, requireRoomOwner, 
   await markTokenRevoked(jti, Math.floor(session.expiresAt.getTime() / 1000));
   await publishRevoked(roomId, jti);
   res.json({ success: true });
+  void auditHostAction(req.user, 'guest.revoke', roomId);
 });
 
 // Bloqueo por dispositivo. Los invitados son anónimos: el bloqueo se ata al
@@ -724,6 +736,7 @@ router.post('/rooms/:id/bans', requireAuthHost, requireRoomOwner, validate(creat
     await setGuestSessionRevoked(s.jti);
   }
   res.json({ ban: banView(ban) });
+  void auditHostAction(req.user, 'ban.create', roomId);
 });
 
 router.get('/rooms/:id/bans', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
@@ -739,6 +752,7 @@ router.delete('/rooms/:id/bans/:banId', requireAuthHost, requireRoomOwner, requi
     return res.status(404).json({ error: 'Not found' });
   }
   res.json({ success: true });
+  void auditHostAction(req.user, 'ban.delete', req.room!.id);
 });
 
 router.get('/invitations/:code', async (req, res) => {
@@ -779,10 +793,12 @@ router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {
     return res.status(404).json({ error: 'Not found' });
   }
   if (room.hostId !== req.user!.id) {
+    void auditDenied({ user: req.user, roomId: room.id });
     return res.status(403).json({ error: 'Forbidden' });
   }
   await setRevoked(invitation.id, true);
   res.json({ success: true });
+  void auditHostAction(req.user, 'invitation.revoke', room.id);
 });
 
 const claimSchema = z.object({

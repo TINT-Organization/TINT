@@ -1,0 +1,5 @@
+# Dependencias de runtime (versiones exactas, las mismas que analytics).
+# Driver PostgreSQL.
+psycopg[binary]==3.2.13
+# Consumo de audit:events (XREADGROUP + XACK).
+redis==5.2.1

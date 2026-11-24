@@ -114,8 +114,8 @@ const redis = {
     return 1;
   }),
   exists: vi.fn(async (..._keys: unknown[]) => 0),
-  xadd: vi.fn(async (..._args: unknown[]) => {
-    state.calls.push('redis:xadd');
+  xadd: vi.fn(async (stream: string, ..._args: unknown[]) => {
+    state.calls.push(`redis:xadd ${stream}`);
     return '1-0';
   }),
 };
@@ -210,12 +210,14 @@ describe('POST /rooms/:id/end (HU-LIVE-05)', () => {
     const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
 
     expect(res.status).toBe(200);
-    await vi.waitFor(() => expect(state.calls).toContain('redis:xadd'));
+    await vi.waitFor(() => expect(state.calls).toContain('redis:xadd audit:events'));
     expect(state.calls).toEqual([
       'redis:set room:room-1:closed',
       'redis:publish room:room-1:sync',
       'db:disable',
-      'redis:xadd',
+      'redis:xadd analytics:events',
+      // Bitácora de auditoría (escenario 5): después de responder.
+      'redis:xadd audit:events',
     ]);
   });
 
@@ -397,11 +399,14 @@ describe('POST /internal/rooms/:id/disable (HU-LIVE-05 AC2, gracia vencida)', ()
     expect(message.event_id).toMatch(UUID_RE);
     expect(message.occurred_at).toMatch(ISO_RE);
     await vi.waitFor(() => expect(roomClosedFields()).toMatchObject({ room_id: 'room-1', reason: 'grace_expired' }));
+    await vi.waitFor(() => expect(state.calls).toContain('redis:xadd audit:events'));
     expect(state.calls).toEqual([
       'redis:set room:room-1:closed',
       'redis:publish room:room-1:sync',
       'db:disable',
-      'redis:xadd',
+      'redis:xadd analytics:events',
+      // Bitácora de auditoría (escenario 5): después de responder.
+      'redis:xadd audit:events',
     ]);
   });
 

@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { verifyFirebaseIdToken } from '../modules/auth/firebaseToken.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
 import { logger } from '../logging.js';
+import { auditDenied } from '../modules/audit/audit.events.js';
 
 export interface AuthUser {
   id: string;
@@ -17,11 +18,17 @@ declare module 'express-serve-static-core' {
   }
 }
 
+/** 401 y `access.denied` en la bitácora (sin actor: el token no es válido). */
+function unauthorized(res: Response, error: string) {
+  void auditDenied({});
+  return res.status(401).json({ error });
+}
+
 export async function requireAuthHost(req: Request, res: Response, next: NextFunction) {
   try {
     const header = req.headers.authorization;
     if (!header || !header.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Unauthorized' });
+      return unauthorized(res, 'Unauthorized');
     }
     const token = header.substring(7);
     let verified: jwt.JwtPayload;
@@ -29,7 +36,7 @@ export async function requireAuthHost(req: Request, res: Response, next: NextFun
       verified = await verifyFirebaseIdToken(token);
     } catch (err) {
       logger.error('auth: fallo al verificar JWT de Firebase', { error: (err as Error).message });
-      return res.status(401).json({ error: 'Invalid token' });
+      return unauthorized(res, 'Invalid token');
     }
     const providerSub = verified.sub as string;
     let user;
@@ -55,6 +62,6 @@ export async function requireAuthHost(req: Request, res: Response, next: NextFun
     next();
   } catch (err) {
     logger.error('auth: error inesperado en requireAuthHost', { error: (err as Error).message });
-    return res.status(401).json({ error: 'Unauthorized' });
+    return unauthorized(res, 'Unauthorized');
   }
 }

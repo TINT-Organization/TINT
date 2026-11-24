@@ -1,11 +1,11 @@
 GO_SERVICES := services/sync-core services/social-core
-PY_SERVICES := services/media-worker services/analytics
+PY_SERVICES := services/media-worker services/analytics services/audit-log
 COVERAGE_MIN := 85
 
 NODE_SERVICES := services/identity-api
 CPP_SERVICES := services/voice-core
 
-.PHONY: up down env-sync backup restore smoke-persistence test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice observability health logs smoke-observability secrets smoke-secrets prototype-health e2e-stream e2e-system
+.PHONY: up down env-sync backup restore smoke-persistence test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice observability health logs smoke-observability secrets smoke-secrets prototype-health e2e-stream e2e-system test-android
 
 # Arranque recomendado: completa .env con lo que falte de .env.example y reconstruye
 # (tras un git pull, las imágenes viejas no tienen el código nuevo).
@@ -75,7 +75,7 @@ test-stream:
 	  bash -euo pipefail -c 'clang-format --dry-run --Werror $$(find src tests -name "*.cpp" -o -name "*.hpp") && \
 	    cmake -S . -B build-cov -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSTREAM_COVERAGE=ON && cmake --build build-cov && \
 	    ctest --test-dir build-cov --output-on-failure && \
-	    gcovr --root . --filter src/ --exclude src/main.cpp --gcov-ignore-errors=no_working_dir_found build-cov --fail-under-line $(COVERAGE_MIN)'
+	    gcovr --root . --filter src/ --exclude src/main.cpp --gcov-ignore-errors=no_working_dir_found --gcov-ignore-parse-errors=negative_hits.warn_once_per_file build-cov --fail-under-line $(COVERAGE_MIN)'
 
 # Prueba rápida contra stream-core levantado (docker compose up -d stream-core).
 smoke-stream:
@@ -135,3 +135,7 @@ smoke-secrets:
 prototype-health: health
 	@echo Verificando gateway /healthz...
 	@curl -sk https://localhost/healthz || true
+# Aparte de test-all: exige JDK 17 y el Android SDK (JAVA_HOME y ANDROID_HOME) y un google-services.json
+# (el real o app/google-services.json.example). Ver apps/android/README.md.
+test-android:
+	cd apps/android && ./gradlew testDebugUnitTest koverVerifyDebug

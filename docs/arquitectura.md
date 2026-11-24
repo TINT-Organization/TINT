@@ -90,6 +90,7 @@ flowchart TB
 | Servicio | Responsabilidad | Estado | Guía |
 | :--- | :--- | :--- | :--- |
 | `apps/web` | UI: login, dashboard, gestión de salas, invitación, biblioteca y subida de vídeo, reproductor sincronizado con barra del host (volumen, calidad, velocidad), puntero láser, Ambilight, chat con moderación y spoilers, encuestas, trivia, recap, bloqueo de invitados y analítica de la sala | ✅ Implementado (UI nueva con `framer-motion`, logo SVG, Ambilight y láser) | [README](../apps/web/README.md) · [AGENTS](../apps/web/AGENTS.md) |
+| `apps/android` | App nativa en Kotlin (Jetpack Compose) que consume los mismos contratos que la web: REST `/api/v1`, Canal Sync v2 y Canal Social ([ADR 0026](adr/0026-app-android-nativa-kotlin.md)) | 🟡 Implementado: cliente REST y APK de debug (AND-08, AND-09), login con Google (AND-01), unirse por link o código (AND-02), reproducción sincronizada con Media3 (AND-03) y chat, reacciones, trivia, encuestas (ver y votar) y puntero láser (ver) del Canal Social (AND-04, AND-05). transmisión en vivo como espectador por WHEP (AND-06). y voz P2P con permiso de micrófono (AND-07). Con esto la app cubre los siete tickets AND | [README](../apps/android/README.md) · [AGENTS](../apps/android/AGENTS.md) |
 | `services/identity-api` | Usuarios, salas (renombrar, borrado lógico), invitaciones, tokens (guest token, sync-ticket, analytics-ticket), subida y reproducción de vídeo, biblioteca `GET /videos`, invitados (retirar y bloquear por dispositivo con `room_bans`) | ✅ Implementado | [README](../services/identity-api/README.md) · [AGENTS](../services/identity-api/AGENTS.md) |
 | `services/sync-core` | Reloj Maestro, Canal Sync v2 (`PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD`/`VOLUME`/`QUALITY`), drift, presencia, delegación, revocación, métricas | ✅ Implementado (v2) | [README](../services/sync-core/README.md) · [AGENTS](../services/sync-core/AGENTS.md) |
 | `services/social-core` | Chat en vivo (`/ws/social`) con moderación (modo lento y silencio) y spoilers, reacciones, puntero láser, encuestas, recap y trivias con rankings | 🟢 Chat, moderación, spoilers, reacciones, láser, encuestas, recap y trivias implementados. Heatmap: solo los buckets de 5 s en memoria (`internal/reactions/buckets.go`); las claves `room:{id}:heatmap` y `video:{id}:heatmap:history` y el evento de heatmap en vivo cada 1 s están **previstos**. La retransmisión de Ambilight en vivo también está **prevista** (hoy la web descarga `ambilight.json` por HTTP) | [README](../services/social-core/README.md) · [AGENTS](../services/social-core/AGENTS.md) |
@@ -562,6 +563,19 @@ Ningún secreto del sistema se versiona en Git ni se hornea en capas de las imá
 
 El requerimiento R10 y la historia OPS-06 (#91) establecen que el despliegue del software debe ser 100 % orientado a contenedores y reproducible por un evaluador en menos de 15 minutos. Las instrucciones concisas de una página, los pasos de verificación y la matriz de solución de problemas (AC1, AC2, AC3) están centralizados en la sección [Instrucciones de Ejecución del Prototipo](../README.md#-instrucciones-de-ejecución-del-prototipo-ops-06) del `README.md` y formalizados en el [ADR 0023](adr/0023-instrucciones-de-ejecucion-del-prototipo.md).
 
+### 7.6 Segmentación de red (Prototipo 3, escenario 3, ADR 0027)
+
+Cada capa tiene su red de Compose y cada servicio entra solo en las que necesita:
+
+| Red | Capa | Miembros |
+| :--- | :--- | :--- |
+| `edge` | Presentación y Acceso | gateway, web, emulador de login local |
+| `app` | Servicios | gateway, web (salto S1), identity-api y los núcleos |
+| `data` | Datos | PostgreSQL, Redis, MongoDB, MinIO y los servicios que los usan; en producción es `internal: true` |
+| `media` | Medios | MinIO y gateway (URLs firmadas) |
+
+`web`, `gateway` y el emulador no pertenecen a `data`; `media-worker` y `audit-log` solo a `data`. coturn usa la red del host. En desarrollo las bases publican en `127.0.0.1`; en producción no publican nada (MinIO conserva 9000 y stream-core su UDP de medios). Las reglas las comprueba `gateway/tests/test_network_segmentation.py`.
+
 ## 8. Puertos locales
 
 | Servicio | Puerto | Notas |
@@ -575,10 +589,10 @@ El requerimiento R10 y la historia OPS-06 (#91) establecen que el despliegue del
 | stream-core | 8086 · UDP `STREAM_UDP_PORT` | `docker compose` (`/api/v1/stream/*` WHIP/WHEP, `/healthz`) |
 | coturn | 3478 · 49160–49200 | `docker compose` (STUN/TURN, red del host) |
 | Firebase Auth Emulator | 9099 (solo `127.0.0.1`) | `docker compose` de desarrollo: login local del host ([ADR 0024](adr/0024-login-local-con-firebase-auth-emulator.md)); no existe en producción |
-| PostgreSQL | 5432 | |
-| Redis | 6379 | |
-| MinIO | 9000 (API) · 9001 (consola) | |
-| MongoDB | 27017 | `docker compose` (metadatos del chat; social-core) |
+| PostgreSQL | 5432 (solo `127.0.0.1`) | no se publica en producción |
+| Redis | 6379 (solo `127.0.0.1`) | no se publica en producción |
+| MinIO | 9000 (API) · 9001 (consola, solo `127.0.0.1`) | en producción solo 9000 |
+| MongoDB | 27017 (solo `127.0.0.1`) | `docker compose` (metadatos del chat; social-core); no se publica en producción |
 
 El servicio `gateway` publica `80/443` como entrada única. Redirige HTTP a
 HTTPS, termina TLS con Caddy y mantiene el contrato público de rutas:
@@ -673,6 +687,7 @@ Campos obligatorios: `timestamp` (ISO UTC con ms), `level` (`debug|info|warn|err
 ## 9. Calidad, CI y CD
 
 - **CI** (`.github/workflows/ci-pipeline.yml`): ver el diagrama de la [§7.3](#73-pipeline-de-ci-y-cd). Cobertura mínima `COVERAGE_MIN = 85` en todos los jobs (en Go con `scripts/check-go-coverage.sh`; en web e identity-api con los umbrales de `vitest.config.ts`). El job `ci-gate` corre siempre y falla si algún job no termina en `success`.
+- **Android:** el job `android` (JDK 17, Gradle) corre `testDebugUnitTest`, `koverVerifyDebug` (mínimo 85 %) y `assembleDebug` en `apps/android`.
 - **Diferencia con el gate de AGENTS:** el gate de `apps/web` en el [AGENTS raíz](../AGENTS.md#gates-por-dominio) incluye `npm run build`, pero el job `web` del CI no lo ejecuta (solo lint, typecheck y vitest).
 - **Carga:** el job `voice-load-smoke` corre 50 VUs de señalización de voz (rotación en salas de 5, umbrales de entrada, reenvío y autorización); el job `sync-load-smoke` corre 50 VUs; la prueba completa de 500 conexiones (SYNC-TEST-01) se corre a mano desde otra máquina ([dominio-reproduccion §14](dominio-reproduccion.md#14-verificación-y-resultados)).
 - **Local:** `make test-all` (Go, Python, web, identity-api y C++) y `make up`/`make down`.
@@ -709,12 +724,15 @@ Campos obligatorios: `timestamp` (ISO UTC con ms), `level` (`debug|info|warn|err
 | [0023](adr/0023-instrucciones-de-ejecucion-del-prototipo.md) | Instrucciones de ejecución del prototipo y guía de revisión (OPS-06) |
 | [0024](adr/0024-login-local-con-firebase-auth-emulator.md) | Login local del host con el Firebase Auth Emulator |
 | [0025](adr/0025-metadatos-del-chat-en-mongodb.md) | Metadatos del chat en MongoDB, sin el texto (SOC-07, DAT-02) (propuesta) |
+| [0026](adr/0026-app-android-nativa-kotlin.md) | App Android nativa en Kotlin |
+| [0027](adr/0027-segmentacion-de-red-por-capas.md) | Segmentación de red: una red de Compose por capa |
 
 ## 11. Documentación por servicio
 
 | Servicio | README | AGENTS |
 | :--- | :--- | :--- |
 | web | [apps/web/README.md](../apps/web/README.md) | [apps/web/AGENTS.md](../apps/web/AGENTS.md) |
+| android | [apps/android/README.md](../apps/android/README.md) | [apps/android/AGENTS.md](../apps/android/AGENTS.md) |
 | identity-api | [services/identity-api/README.md](../services/identity-api/README.md) | [services/identity-api/AGENTS.md](../services/identity-api/AGENTS.md) |
 | sync-core | [services/sync-core/README.md](../services/sync-core/README.md) | [services/sync-core/AGENTS.md](../services/sync-core/AGENTS.md) |
 | social-core | [services/social-core/README.md](../services/social-core/README.md) | [services/social-core/AGENTS.md](../services/social-core/AGENTS.md) |

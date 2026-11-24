@@ -7,6 +7,7 @@ Corre en el portátil (generador de carga) y maneja el servidor por SSH. Solo us
   python3 bench/run.py measure --label antes-develop
   python3 bench/run.py security --label antes-develop
   python3 bench/run.py lab6 --label lab6           # Laboratorio 6: curva por VUs y knee de 4 endpoints
+  python3 bench/run.py segmentation --label antes-develop   # escenario 3: alcanzabilidad desde web e identity-api
   python3 bench/run.py restore                     # baja el banco y devuelve el servidor a como estaba
   python3 bench/summarize.py bench/results/antes-develop [bench/results/despues]
 
@@ -20,14 +21,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import segmentation_checks  # noqa: E402
 import summarize  # noqa: E402
 
 BENCH = Path(__file__).parent
@@ -43,12 +47,22 @@ K6_IMAGE = "grafana/k6:2.4.0"
 CALIBRATION_RATES = [25, 50, 100, 200, 400, 800, 1200]
 
 
+SAFE_ARG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def safe_arg(value: str, name: str) -> str:
+    """Valida un valor que acaba en una línea de cmd.exe por SSH (etiqueta de imagen, nombre de archivo)."""
+    if value and not SAFE_ARG.fullmatch(value):
+        raise SystemExit(f"--{name}: solo letras, números, punto, guion y guion bajo (recibido: {value!r})")
+    return value
+
+
 class Ctx:
     def __init__(self, args: argparse.Namespace):
         self.host = args.host
         self.ip = args.ip
         self.port = args.https_port
-        self.image_tag = getattr(args, "image_tag", "")
+        self.image_tag = safe_arg(getattr(args, "image_tag", ""), "image-tag")
         self.local = getattr(args, "local", False)
 
     @property
@@ -74,6 +88,40 @@ def scp(ctx: Ctx, local: Path, remote_dir: str) -> None:
 LOCAL_PROJECT = "tintlab6"
 # Lo mínimo para la feature medida (web, gateway, identity-api, PostgreSQL, Redis y MinIO): cabe en un portátil.
 LOCAL_SERVICES = "gateway web identity-api postgres redis minio minio-init firebase-auth-emulator"
+def compose_services(text: str) -> list[str]:
+    """Nombres de los servicios de un docker-compose.yml, en orden."""
+    names, inside = [], False
+    for line in text.splitlines():
+        if re.match(r"^services:\s*$", line):
+            inside = True
+        elif inside and re.match(r"^\S", line):
+            break
+        elif inside and (m := re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)):
+            names.append(m.group(1))
+    return names
+
+
+def filter_bench_override(text: str, keep: list[str]) -> str:
+    """Quita de compose.bench.yml los servicios que el commit medido no tiene (p. ej. audit-log en 5767874)."""
+    out, skipping, inside = [], False, False
+    for line in text.splitlines(keepends=True):
+        if re.match(r"^services:\s*$", line):
+            inside = True
+        elif inside and (m := re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)):
+            skipping = m.group(1) not in keep
+        elif inside and re.match(r"^\S", line):
+            inside = skipping = False
+        if not skipping:
+            out.append(line)
+    return "".join(out)
+
+
+def compose_file_value(bench_dir: str, extra: str = "") -> str:
+    """COMPOSE_FILE del banco: el Compose del repo, el override del banco y, si se pide, otro más."""
+    files = ["docker-compose.yml", f"{bench_dir}\\compose.bench.yml"]
+    if extra:
+        files.append(f"{bench_dir}\\{extra}")
+    return ";".join(files)
 
 
 def compose(ctx: Ctx, args: str, **kwargs) -> str:
@@ -138,10 +186,21 @@ def cmd_prepare(ctx: Ctx, args: argparse.Namespace) -> None:
     public_compose(ctx, "stop")
     ssh(ctx, f"if not exist {REMOTE_BENCH} mkdir {REMOTE_BENCH}")
     scp(ctx, BENCH / "remote" / "setup.ps1", "C:/tint/bench/")
-    scp(ctx, BENCH / "compose.bench.yml", "C:/tint/bench/")
+    # El override del banco puede nombrar servicios que el commit medido aún no tenía: se filtra.
+    shown = subprocess.run(["git", "show", f"{commit}:docker-compose.yml"], cwd=ROOT, capture_output=True, text=True)
+    override = (BENCH / "compose.bench.yml").read_text(encoding="utf-8")
+    if shown.returncode == 0:
+        override = filter_bench_override(override, compose_services(shown.stdout))
+    with tempfile.TemporaryDirectory() as tmp:
+        filtered = Path(tmp) / "compose.bench.yml"
+        filtered.write_text(override, encoding="utf-8")
+        scp(ctx, filtered, "C:/tint/bench/")
+    extra = safe_arg(args.extra_compose, "extra-compose")
+    if extra:
+        scp(ctx, BENCH / extra, "C:/tint/bench/")
     secret = secrets.token_hex(24)
     print(ssh(ctx, f"powershell -NoProfile -ExecutionPolicy Bypass -File {REMOTE_BENCH}\\setup.ps1 "
-                   f"-Commit {commit} -Secret {secret}"))
+                   f"-Commit {commit} -Secret {secret}" + (f" -ExtraCompose {extra}" if extra else "")))
 
 
 def cmd_restore(ctx: Ctx, _args: argparse.Namespace) -> None:
@@ -356,6 +415,67 @@ def cmd_security(ctx: Ctx, args: argparse.Namespace) -> None:
                     "--out", str(out)], check=True)
 
 
+def cmd_up(ctx: Ctx, _args: argparse.Namespace) -> None:
+    """Recrea el stack del banco desde cero (down -v, up) y espera a que quede sano."""
+    reset(ctx)
+    print("stack del banco sano")
+
+
+BUILD_TASK = "TINT Bench Build"
+
+
+def build_script(tag: str) -> str:
+    """.cmd que construye las imágenes con la etiqueta y deja el código de salida en el log."""
+    log = f"{REMOTE_BENCH}\\build-{tag}.log"
+    return (f"@echo off\r\ncd /d {REMOTE_REPO}\r\nset BENCH_IMAGE_TAG={tag}\r\n"
+            f"docker compose build > {log} 2>&1\r\necho EXIT=%ERRORLEVEL% >> {log}\r\n")
+
+
+def cmd_build(ctx: Ctx, _args: argparse.Namespace) -> None:
+    """Construye en el servidor las imágenes del commit fijado con la etiqueta --image-tag.
+
+    Por SSH, Docker Desktop de Windows no puede leer el almacén de credenciales ("A specified logon
+    session does not exist") y no descarga las imágenes base. Se lanza entonces como tarea programada
+    interactiva (/IT) del usuario con sesión iniciada, la misma que usa "TINT Deploy".
+    """
+    if not ctx.image_tag:
+        raise SystemExit("build necesita --image-tag (p. ej. --image-tag antes)")
+    tag = ctx.image_tag
+    log = f"{REMOTE_BENCH}\\build-{tag}.log"
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / f"build-{tag}.cmd"
+        script.write_bytes(build_script(tag).encode())
+        scp(ctx, script, "C:/tint/bench/")
+    user = ssh(ctx, "whoami")
+    ssh(ctx, f"if exist {log} del {log}")
+    ssh(ctx, f'schtasks /Create /F /TN "{BUILD_TASK}" /SC ONCE /ST 23:59 /IT /RU "{user}" /TR "{REMOTE_BENCH}\\build-{tag}.cmd"')
+    ssh(ctx, f'schtasks /Run /TN "{BUILD_TASK}"')
+    try:
+        deadline = time.time() + 3600
+        while time.time() < deadline:
+            time.sleep(30)
+            out = ssh(ctx, f"type {log}", check=False)
+            if "EXIT=" in out:
+                print("\n".join(out.splitlines()[-15:]))
+                if "EXIT=0" not in out:
+                    raise RuntimeError("docker compose build falló en el servidor (ver el log)")
+                return
+        raise RuntimeError("el build no terminó en 60 min")
+    finally:
+        ssh(ctx, f'schtasks /Delete /F /TN "{BUILD_TASK}"', check=False)
+
+
+def cmd_segmentation(ctx: Ctx, args: argparse.Namespace) -> None:
+    """Escenario 3: qué almacenes alcanzan `web` e `identity-api` y la latencia de PING a Redis."""
+    out = RESULTS / args.label / "segmentation.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    result = segmentation_checks.run_checks(
+        lambda service, js: compose(ctx, segmentation_checks.exec_command(service, js), check=False, timeout=120))
+    result["taken_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    out.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--host", default="escritorio", help="alias SSH del servidor")
@@ -368,6 +488,7 @@ def main() -> int:
 
     prepare = sub.add_parser("prepare")
     prepare.add_argument("--commit", default="", help="commit a medir (por defecto el del clon público)")
+    prepare.add_argument("--extra-compose", default="", help="override de bench/ que se suma al COMPOSE_FILE (p. ej. compose.segmentation.yml)")
     sub.add_parser("restore")
 
     measure = sub.add_parser("measure")
@@ -400,9 +521,16 @@ def main() -> int:
     security = sub.add_parser("security")
     security.add_argument("--label", required=True)
 
+    sub.add_parser("up", help="recrea el stack del banco desde cero y espera a que quede sano")
+    sub.add_parser("build", help="construye las imágenes del commit fijado con --image-tag")
+
+    segmentation = sub.add_parser("segmentation", help="escenario 3: alcanzabilidad de almacenes desde web e identity-api")
+    segmentation.add_argument("--label", required=True)
+
     args = parser.parse_args()
     ctx = Ctx(args)
-    {"prepare": cmd_prepare, "restore": cmd_restore, "measure": cmd_measure, "security": cmd_security, "lab6": cmd_lab6}[args.command](ctx, args)
+    {"prepare": cmd_prepare, "restore": cmd_restore, "measure": cmd_measure, "security": cmd_security,
+     "segmentation": cmd_segmentation, "build": cmd_build, "up": cmd_up, "lab6": cmd_lab6}[args.command](ctx, args)
     return 0
 
 
