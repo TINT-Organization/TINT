@@ -46,7 +46,7 @@ function token(nick, role = 'participant') {
     nick,
     jti: crypto.randomUUID(),
     iss: process.env.JWT_ISSUER || 'tint-identity',
-    aud: process.env.JWT_AUDIENCE || 'tint:room',
+    aud: process.env.JWT_AUDIENCE || 'tint:stream',
     exp: now + 3600,
   });
 }
