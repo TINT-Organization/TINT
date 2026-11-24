@@ -101,3 +101,60 @@ Dos correcciones al documento del Prototipo 3:
 - El certificado es interno de Caddy y k6 no lo verifica; `localhost` se resuelve a la IP del servidor. Es igual en el "antes" y el "después".
 - Los puertos de la tabla de superficie incluyen servicios propios de la máquina de pruebas (SSH, Windows y otros) que no son de TINT.
 - El servidor corre además `transcriptor` (uso personal); estaba en reposo (0,1 % de CPU) antes de cada corrida.
+
+## Resultados: escenario 1, canal seguro (antes y después de HSTS)
+
+Medida el 2026-11-23 sobre el stack local de `docker compose`, con la misma carga y la misma máquina en ambos lados. Lo único que cambia entre el "antes" y el "después" es el `gateway/Caddyfile`: el "antes" usa el de `c262cbd` (sin HSTS) y el "después" el de `develop` con la medida ([ADR 0029](adr/0029-hsts-y-canal-seguro-en-el-gateway.md), PR #179). Tras el merge, `develop` ya trae HSTS, así que un "antes" nuevo debe armarse con `git checkout c262cbd -- gateway/Caddyfile`.
+
+| Prueba | Antes | Después |
+| :--- | :--- | :--- |
+| Peticiones en claro que llegan a los vídeos (`curl http://localhost:9000/minio/health/live`) | 200 en HTTP plano | **200 en HTTP plano (no cumple: excepción documentada, ver abajo)** |
+| Versión mínima de TLS aceptada (`testssl.sh` 3.2) | TLS 1.2 y 1.3; TLS 1.0 y 1.1 rechazados | TLS 1.2 o superior; SSLv2, SSLv3, TLS 1.0 y 1.1 "not offered" |
+| HSTS activado (`curl -I` y `testssl.sh`) | no | sí: `max-age=31536000; includeSubDomains; preload` (365 días) |
+| Redirección HTTP a HTTPS | 308 | 308, sin HSTS en la respuesta HTTP (el navegador la ignora por RFC 6797) |
+| p95 de `ws_connecting` por el gateway (k6; umbral del repo: < 1 s) | 144,18 ms (133,74-159,98) | 137,09 ms (123,77-188,26) |
+
+### Canal Sync por el gateway, antes y después
+
+`bench/k6/sync-gateway.js` con 50 conexiones durante 30 s, 3 corridas por lado; cada celda es la mediana y, entre paréntesis, el mínimo y el máximo. Ambos lados usan el mismo calentamiento sin medir (5 conexiones, 10 s).
+
+| Métrica | Antes | Después | Umbral del repo |
+| :--- | :--- | :--- | :--- |
+| p95 de `ws_connecting` | 144,18 ms (133,74-159,98) | 137,09 ms (123,77-188,26) | < 1 s |
+| p99 de broadcast | 15,92 ms (7-25) | 11 ms (5,97-13) | < 100 ms |
+| p99 de drift | 0 ms | 0 ms | < 500 ms |
+| Sesiones y comprobaciones fallidas | 50 y 0 | 50 y 0 | n/a |
+
+Los rangos se superponen: HSTS no cambia de forma medible el tiempo de apertura de la conexión. Es lo esperado, porque es una cabecera de respuesta y no añade saltos ni handshakes. Una primera tanda del "después" sin calentamiento dio una corrida de 327,22 ms (mediana 153,53 ms); se descartó por comparar sin las mismas condiciones y se repitió con el calentamiento del "antes". Ambas tandas cumplen el umbral de 1 s.
+
+### Excepción: vídeos por MinIO en claro
+
+El gateway ya envía HSTS y cifra todo lo que pasa por Caddy (API, web y WebSockets). MinIO (`:9000`) sigue fuera del gateway porque las URL firmadas SigV4 firman el Host y la ruta ([ADR 0020](adr/0020-entrada-unica-https-y-topologia-produccion.md)), así que la meta de 0 peticiones en claro a los vídeos **no se cumple con este cambio**. Cerrarla exige otra medida: publicar `/tint-media/*` por el gateway sin reescribir la ruta (con una prueba de que la firma sigue siendo válida) o dar TLS propio a MinIO. `docker-compose.production.yml` ya lista el puerto 9000 como excepción hasta entonces.
+
+### Cómo se reprodujo
+
+```bash
+# Antes: Caddyfile sin HSTS
+git checkout c262cbd -- gateway/Caddyfile
+docker compose up -d --no-build --force-recreate gateway
+# Después: Caddyfile con HSTS
+git checkout HEAD -- gateway/Caddyfile
+docker compose up -d --no-build --force-recreate gateway
+
+curl -sk -I https://localhost/healthz                          # cabecera strict-transport-security
+curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/minio/health/live
+docker run --rm --add-host localhost:<IP-del-host> drwetter/testssl.sh:3.2 \
+  --quiet --protocols --headers --ip <IP-del-host> localhost:443
+docker run --rm -v "$PWD:/w" -w /w -e SERVER_IP=<IP-del-host> -e BASE_URL=wss://localhost \
+  -e JWT_SECRET=<de .env> -e VUS=50 -e DURATION=30s grafana/k6 run \
+  --insecure-skip-tls-verify bench/k6/sync-gateway.js
+```
+
+`<IP-del-host>` es la IPv4 que ve el contenedor para `host.docker.internal` (`192.168.65.254` en Docker Desktop). El script `sync-gateway.js` resuelve `localhost` con `SERVER_IP` porque el sitio de Caddy es `https://localhost`.
+
+### Limitaciones de esta medición
+
+- Una sola máquina (Windows con Docker Desktop) hace de servidor y de generador de carga; no es la medición de dos máquinas por LAN de la línea base. Por eso se usaron 50 conexiones y no 200, y estos valores solo sirven para comparar el "antes" con el "después" de esta sección, no con los 135 ms de la línea base.
+- Con 3 corridas de 30 s, una diferencia de pocos milisegundos queda dentro del ruido (el rango del "después" llega a 188 ms).
+- El certificado es interno de Caddy y k6 no lo verifica (`--insecure-skip-tls-verify`); es igual en ambos lados.
+- Antes de medir hubo que recrear el stack local con `docker compose up -d --no-build`: `identity-api` seguía en la red `default` anterior a la segmentación (ADR 0027) y el gateway no lo alcanzaba (503 en las rutas autenticadas).
