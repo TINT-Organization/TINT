@@ -4,6 +4,7 @@ import yaml
 
 
 CONFIG = Path(__file__).parents[1] / "Caddyfile"
+NGINX_SITE = Path(__file__).parents[2] / "reverse-proxy" / "templates" / "default.conf.template"
 COMPOSE = Path(__file__).parents[2] / "docker-compose.yml"
 PRODUCTION_COMPOSE = Path(__file__).parents[2] / "docker-compose.production.yml"
 
@@ -12,18 +13,17 @@ class GatewayConfigTests(unittest.TestCase):
     def test_gateway_config_exists_with_https_redirect_and_frontend_fallback(self):
         caddyfile = CONFIG.read_text(encoding="utf-8")
 
-        self.assertIn("http://{$GATEWAY_HOST:localhost}", caddyfile)
-        self.assertIn("redir https://{host}:{$GATEWAY_HTTPS_PORT:443}{uri} 308", caddyfile)
-        self.assertIn("https://{$GATEWAY_HOST:localhost}", caddyfile)
+        # Desde ADR 0031 Caddy escucha HTTP interno; la redirección a HTTPS la hace nginx.
+        self.assertIn("http://:8080 {", caddyfile)
         self.assertIn("@health path /healthz", caddyfile)
         self.assertIn("@frontend not path /api/* /ws/*", caddyfile)
         self.assertIn("reverse_proxy @frontend web:5173", caddyfile)
 
     def test_gateway_redirects_plain_http_to_https_with_308(self):
-        """OPS-03/AC3: redirige HTTP plano a HTTPS con código 308 conservando host y URI."""
-        caddyfile = CONFIG.read_text(encoding="utf-8")
-        self.assertIn("http://{$GATEWAY_HOST:localhost}", caddyfile)
-        self.assertIn("redir https://{host}:{$GATEWAY_HTTPS_PORT:443}{uri} 308", caddyfile)
+        """OPS-03/AC3: redirige HTTP plano a HTTPS con 308 conservando host y URI (en nginx, ADR 0031)."""
+        conf = NGINX_SITE.read_text(encoding="utf-8")
+        http_block = conf[conf.index("listen 80"):conf.index("listen 443")]
+        self.assertIn("return 308 https://$host:${GATEWAY_HTTPS_PORT}$request_uri;", http_block)
 
     def test_gateway_routes_all_public_service_connectors(self):
         caddyfile = CONFIG.read_text(encoding="utf-8")
@@ -125,15 +125,12 @@ class GatewayConfigTests(unittest.TestCase):
         tras la primera visita. La cabecera vive solo en el sitio HTTPS, nunca en el
         redirector HTTP plano (ADR 0029).
         """
-        caddyfile = CONFIG.read_text(encoding="utf-8")
-
-        hsts = "Strict-Transport-Security \"max-age=31536000; includeSubDomains; preload\""
-        self.assertIn(f"header {hsts}", caddyfile)
-
-        https_block_start = caddyfile.index("https://{$GATEWAY_HOST:localhost}")
-        http_block = caddyfile[: caddyfile.index("(service_timeout)")]
+        conf = NGINX_SITE.read_text(encoding="utf-8")
+        hsts = 'Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always'
+        https_block = conf[conf.index("listen 443"):]
+        http_block = conf[conf.index("listen 80"):conf.index("listen 443")]
+        self.assertIn(f"add_header {hsts};", https_block)
         self.assertNotIn("Strict-Transport-Security", http_block)
-        self.assertGreater(caddyfile.index("Strict-Transport-Security"), https_block_start)
 
     def test_gateway_preserves_or_generates_correlation_id(self):
         caddyfile = CONFIG.read_text(encoding="utf-8")
@@ -210,18 +207,20 @@ class GatewayReverseProxyHardeningTests(unittest.TestCase):
         self.assertIn("max_size 1MB", self.caddyfile)
 
     def test_responses_hide_server_and_send_security_headers(self):
-        self.assertIn("-Server", self.caddyfile)
-        self.assertIn("X-Content-Type-Options nosniff", self.caddyfile)
-        self.assertIn("X-Frame-Options DENY", self.caddyfile)
-        self.assertIn("Referrer-Policy strict-origin-when-cross-origin", self.caddyfile)
-        self.assertIn(
+        # Caddy oculta su Server; las cabeceras del navegador las pone nginx (ADR 0031).
+        self.assertIn("header -Server", self.caddyfile)
+        site = NGINX_SITE.read_text(encoding="utf-8")
+        for header in (
+            "X-Content-Type-Options nosniff",
+            "X-Frame-Options DENY",
+            "Referrer-Policy strict-origin-when-cross-origin",
             "Content-Security-Policy \"frame-ancestors 'none'; object-src 'none'; base-uri 'self'\"",
-            self.caddyfile,
-        )
+        ):
+            self.assertIn(f"add_header {header}", site)
 
     def test_hsts_comes_only_from_scenario_1(self):
-        # HSTS es de Secure Channel (escenario 1, ADR 0029): una sola cabecera, no duplicada aquí.
-        self.assertEqual(self.caddyfile.count("Strict-Transport-Security"), 1)
+        # HSTS es de Secure Channel (escenario 1, ADR 0029) y desde ADR 0031 la pone solo nginx.
+        self.assertNotIn("Strict-Transport-Security", self.caddyfile)
 
 
 class GatewayImageTests(unittest.TestCase):

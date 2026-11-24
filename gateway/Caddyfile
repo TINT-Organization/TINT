@@ -1,5 +1,14 @@
-http://{$GATEWAY_HOST:localhost} {
-    redir https://{host}:{$GATEWAY_HTTPS_PORT:443}{uri} 308
+# Caddy es el router interno (ADR 0031): no publica puertos ni termina TLS. nginx
+# (reverse-proxy) recibe 80/443 y le pasa todo por HTTP en :8080 dentro de la red edge.
+{
+    servers {
+        # La IP real del cliente llega en X-Forwarded-For desde nginx (redes privadas de Compose):
+        # {client_ip} la usa el límite por IP de invitaciones (ADR 0028).
+        trusted_proxies static private_ranges
+        client_ip_headers X-Forwarded-For
+        # nginx sobrescribe X-Forwarded-For con la IP real de la conexión (un solo valor), así que
+        # no hace falta el modo estricto; Caddy no publica puertos y solo nginx le habla.
+    }
 }
 
 (service_timeout) {
@@ -9,7 +18,7 @@ http://{$GATEWAY_HOST:localhost} {
     }
 }
 
-https://{$GATEWAY_HOST:localhost} {
+http://:8080 {
     @missing_correlation not header X-Correlation-ID *
     request_header @missing_correlation X-Correlation-ID {http.request.uuid}
     header X-Correlation-ID {http.request.header.X-Correlation-ID}
@@ -19,21 +28,9 @@ https://{$GATEWAY_HOST:localhost} {
     }
     log_append correlation_id {http.request.header.X-Correlation-ID}
 
-    # Canal seguro (Escenario 1, patrón Secure Channel, ADR 0029): tras la primera
-    # visita el navegador usa solo HTTPS durante un año, incluidos subdominios. Vive
-    # únicamente en el sitio HTTPS; el redirector HTTP plano no la emite.
-    header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-
-    # Escenario 2 (ADR 0028): no anunciar el servidor y cabeceras de seguridad para el navegador.
-    # La CSP es mínima a propósito: no limita scripts ni conexiones (Firebase, MinIO, WebRTC).
-    # HSTS (escenario 1) va justo arriba, en su propia línea.
-    header {
-        -Server
-        X-Content-Type-Options nosniff
-        X-Frame-Options DENY
-        Referrer-Policy strict-origin-when-cross-origin
-        Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
-    }
+    # HSTS y las cabeceras de seguridad del navegador las pone nginx en el borde (ADR 0029,
+    # ADR 0028, ADR 0031); aquí solo se oculta el servidor para no duplicar cabeceras.
+    header -Server
 
     handle_errors {
         @upstream_unavailable expression `{http.error.status_code} == 502 || {http.error.status_code} == 503 || {http.error.status_code} == 504`

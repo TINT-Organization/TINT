@@ -5,6 +5,9 @@
 services:
   env-check:
     container_name: !reset null
+  reverse-proxy:
+    container_name: !reset null
+    image: tint-monorepo-reverse-proxy:${BENCH_IMAGE_TAG:-latest}
   gateway:
     container_name: !reset null
     image: tint-monorepo-gateway:${BENCH_IMAGE_TAG:-latest}
