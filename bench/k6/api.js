@@ -6,7 +6,7 @@
 //
 // Variables (-e):  BASE_URL (https://localhost:8443), SERVER_IP (IP a la que resuelve localhost), RATE (req/s, por defecto 50), DURATION (por defecto 60s),
 //                  PHASE=mix|burst, HOSTS (20), ROOMS (3), FIREBASE_PROJECT_ID.
-// PHASE=mix mide latencia; PHASE=burst manda RATE req/s a un solo endpoint y cuenta los 429.
+// PHASE=mix mide latencia; PHASE=burst manda RATE req/s a un solo endpoint, con un solo token, y cuenta los 429.
 // Ejemplo: k6 run --insecure-skip-tls-verify -e RATE=100 bench/k6/api.js
 
 import http from 'k6/http';
@@ -95,7 +95,9 @@ function claim(s) {
 }
 
 export default function (data) {
-  const s = data.seeded[Math.floor(Math.random() * data.seeded.length)];
+  // La ráfaga es un solo cliente (un token), como el estímulo del escenario 2: si se repartiera entre
+  // los HOSTS tokens, el límite por usuario del gateway no se vería (ADR 0027).
+  const s = PHASE === 'burst' ? data.seeded[0] : data.seeded[Math.floor(Math.random() * data.seeded.length)];
   const res = PHASE === 'burst' ? listRooms(s) : pick()(s);
   count(res);
   if (PHASE !== 'burst') {

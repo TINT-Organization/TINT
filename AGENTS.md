@@ -15,7 +15,7 @@ Este repositorio es un monorepo multi-lenguaje (Go, TypeScript, Python y C++). *
 | Bitácora de auditoría | `services/audit-log` | Python 3.11, Redis Streams, PostgreSQL (solo INSERT + cadena de hashes), sin API pública | [services/audit-log/AGENTS.md](services/audit-log/AGENTS.md) |
 | Voz | `services/voice-core` | C++23, Boost.Beast, hiredis, WebRTC P2P (solo señalización) | [services/voice-core/AGENTS.md](services/voice-core/AGENTS.md) |
 | Transmisión en vivo | `services/stream-core` | C++23, libdatachannel v0.24.6 (SFU, WHIP/WHEP), Boost.Beast, hiredis | [services/stream-core/AGENTS.md](services/stream-core/AGENTS.md) |
-| Infra / CI | raíz, `.github/`, `scripts/` | Docker Compose, GitHub Actions | este archivo |
+| Infra / CI | raíz, `.github/`, `scripts/`, `gateway/`, `reverse-proxy/` | Docker Compose, GitHub Actions, nginx 1.27.5 en el borde ([ADR 0031](docs/adr/0031-nginx-en-el-borde-y-caddy-como-router.md)), Caddy 2.9.1 compilado con `caddy-ratelimit` v0.1.0 (límite de tasa del gateway, [ADR 0028](docs/adr/0028-limites-y-cabeceras-de-seguridad-en-el-gateway.md)) | este archivo |
 
 ## Documentación
 La documentación de features vive en [`docs/`](docs/README.md), con diagramas Mermaid:
@@ -55,6 +55,7 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | Cierre de sala `ROOM_CLOSED` en `room:{id}:sync` + clave `room:{id}:closed` + cierre `4010` + `410 {error:"Disabled"}` | identity-api → sync-core, social-core, voice-core, stream-core, web | [ADR 0019](docs/adr/0019-salas-live-y-cierre-room-closed.md) |
 | API WHIP/WHEP `/api/v1/stream/*` + DataChannel `stream-events`; internos `/internal/events/start/{id}` y `/api/v1/internal/rooms/{id}/disable` | stream-core ↔ web, identity-api | [dominio-transmision §3–6](docs/dominio-transmision.md#3-api-whipwhep-apiv1stream) |
 | `TURN_SECRET` (credenciales TURN efímeras) | voice-core, stream-core ↔ coturn | `.env.example` raíz |
+| Entrada pública solo por `reverse-proxy` (nginx 80/443; `/tint-media/*` → MinIO con `MINIO_PUBLIC_ENDPOINT=https://<host>`); Caddy interno en `:8080` | infra ↔ web, identity-api | [ADR 0031](docs/adr/0031-nginx-en-el-borde-y-caddy-como-router.md) |
 | Puertos locales: social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, stream-core 8086 (+ UDP 8087), coturn 3478, Firebase Auth Emulator 9099 (solo desarrollo, `127.0.0.1`) | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
 | Redes de Compose por capa (`edge`, `app`, `data` interna en producción, `media`); bases de datos sin puertos publicados en producción y en `127.0.0.1` en desarrollo; todo servicio nuevo declara `networks:` | infra ↔ todos los servicios | [ADR 0027](docs/adr/0027-segmentacion-de-red-por-capas.md) · [arquitectura §7.6](docs/arquitectura.md#76-segmentacion-de-red-prototipo-3-escenario-3-adr-0027) |
 | Observabilidad y salud (`/healthz` con `status`/`service`; logs JSON a stdout con `LOG_LEVEL` configurable) | Todos los servicios (gateway, web, identity, sync, social, media-worker, analytics, audit-log, voice, stream, coturn) | [ADR 0021](docs/adr/0021-observabilidad-salud-y-logs.md) · [arquitectura §8.2](docs/arquitectura.md#82-observabilidad-salud-y-logs) |

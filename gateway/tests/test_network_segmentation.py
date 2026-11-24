@@ -2,10 +2,10 @@
 
 Capas de la vista en capas → redes de Docker:
 
-- Presentación y Acceso → `edge` (gateway, web, emulador de login local).
+- Presentación y Acceso → `edge` (reverse-proxy, gateway, web, emulador de login local).
 - Servicios            → `app` (APIs y núcleos; el gateway los alcanza por aquí).
 - Datos                → `data` (PostgreSQL, Redis, MongoDB, MinIO); en producción `internal: true`.
-- Medios               → `media` (MinIO y gateway), para que el navegador llegue a las URLs firmadas.
+- Medios               → `media` (MinIO y reverse-proxy), para servir las URLs firmadas por TLS (ADR 0031).
 
 coturn usa la red del host y env-check no necesita red.
 """
@@ -29,6 +29,7 @@ DATA_HELPERS = ("minio-init", "mongo-init")
 # Servicios que hablan con un almacén (y por eso viven también en `data`).
 DATA_CLIENTS = (
     "identity-api",
+    "identity-migrate",
     "media-worker",
     "analytics",
     "audit-log",
@@ -135,7 +136,7 @@ class LayerIsolationTests(unittest.TestCase):
 
     def test_edge_holds_only_the_entry_points(self):
         on_edge = {n for n, s in self.services.items() if "edge" in networks_of(s)}
-        self.assertEqual(on_edge, {"gateway", "web", "firebase-auth-emulator"})
+        self.assertEqual(on_edge, {"reverse-proxy", "gateway", "web", "firebase-auth-emulator"})
 
 
 class ReachabilityTests(unittest.TestCase):
@@ -200,9 +201,9 @@ class PublishedPortsTests(unittest.TestCase):
             with self.subTest(service=name):
                 self.assertIn(f"  {name}:\n    ports: !reset []", production)
 
-    def test_production_minio_keeps_only_the_signed_url_api(self):
-        """Excepción documentada hasta que el escenario 1 publique MinIO por el gateway."""
-        self.assertEqual(self.production["minio"]["ports"], ["9000:9000"])
+    def test_production_minio_publishes_nothing(self):
+        """Escenario 1 (ADR 0031): los vídeos salen por nginx en /tint-media/*, no por 9000."""
+        self.assertEqual(self.production["minio"]["ports"], [])
 
     def test_production_stream_core_keeps_only_its_udp_media_port(self):
         ports = self.production["stream-core"]["ports"]
@@ -217,7 +218,7 @@ class PublishedPortsTests(unittest.TestCase):
                 ports = self.production[name]["ports"]
             effective[name] = [str(p) for p in ports]
         published = {n: p for n, p in effective.items() if p}
-        self.assertEqual(set(published), {"gateway", "minio", "stream-core"})
+        self.assertEqual(set(published), {"reverse-proxy", "stream-core"})
 
 
 class DocumentationTests(unittest.TestCase):
